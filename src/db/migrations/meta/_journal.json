@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1771259191298,
+      "tag": "0000_stale_multiple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1771328112547,
+      "tag": "0001_empty_diamondback",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1771363379677,
+      "tag": "0002_hesitant_banshee",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1772642446053,
+      "tag": "0003_redundant_night_thrasher",
+      "breakpoints": true
+    }
+  ]
+}
