@@ -115,3 +115,51 @@ export async function shopifyFetchAllPages<T, R>(
 
   return allItems;
 }
+
+export async function shopifyGraphQL<T>(query: string): Promise<T> {
+  const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}/graphql.json`;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("Retry-After");
+      const waitMs = retryAfter
+        ? Math.min(parseFloat(retryAfter) * 1000, MAX_BACKOFF_MS)
+        : Math.min(1000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+      console.warn(
+        `Shopify GraphQL rate limited (429). Retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`
+      );
+      await sleep(waitMs);
+      continue;
+    }
+
+    if (!res.ok) {
+      lastError = new Error(
+        `Shopify GraphQL error: ${res.status} ${res.statusText}`
+      );
+      if (res.status >= 500) {
+        const waitMs = Math.min(1000 * Math.pow(2, attempt), MAX_BACKOFF_MS);
+        await sleep(waitMs);
+        continue;
+      }
+      throw lastError;
+    }
+
+    const json = (await res.json()) as { data: T; errors?: { message: string }[] };
+    if (json.errors?.length) {
+      throw new Error(`Shopify GraphQL errors: ${json.errors.map((e) => e.message).join(", ")}`);
+    }
+    return json.data;
+  }
+
+  throw lastError || new Error("Shopify GraphQL fetch failed after max retries");
+}

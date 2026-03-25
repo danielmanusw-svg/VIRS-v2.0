@@ -1,0 +1,1 @@
+ALTER TABLE `invoice_line_items` ADD `line_price` real DEFAULT 0 NOT NULL;

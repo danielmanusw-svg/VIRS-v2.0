@@ -7,6 +7,7 @@ import { db } from "@/db";
 import { invoices, invoiceLineItems } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { InvoicePDF } from "@/lib/invoice/pdfTemplate";
+import { parseInvoiceMetadata } from "@/lib/invoice/snapshot";
 
 export async function GET(
   _request: NextRequest,
@@ -31,9 +32,9 @@ export async function GET(
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoice_id, invoiceId));
 
-    const missingOrderNumbers: number[] = invoice.missing_order_numbers
-      ? JSON.parse(invoice.missing_order_numbers)
-      : [];
+    const { missing_order_numbers: missingOrderNumbers } = parseInvoiceMetadata(
+      invoice.missing_order_numbers
+    );
 
     const element = React.createElement(InvoicePDF, {
       invoiceId: invoice.id,
@@ -50,6 +51,7 @@ export async function GET(
         supplier_cost: l.supplier_cost,
         shipping_cost: l.shipping_cost,
         line_total: l.line_total,
+        line_price: l.line_price,
       })),
       totalSupplierCost: invoice.total_supplier_cost,
       totalShippingCost: invoice.total_shipping_cost,

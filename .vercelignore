@@ -1,0 +1,13 @@
+node_modules
+.next
+*.db
+*.sqlite
+local.db
+sync.log
+docs
+scripts
+*.mdf
+*.ldf
+invoice_8_data.json
+Price Sheet Fix.csv
+FINAL Price Sheet FP fix.csv

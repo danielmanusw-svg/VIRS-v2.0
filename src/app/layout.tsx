@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Link from "next/link";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
@@ -33,76 +34,100 @@ export default function RootLayout({
             <div className="mb-6 text-lg font-bold tracking-tight">VIRS</div>
             <ul className="space-y-1 text-sm">
               <li>
-                <a
+                <Link
                   href="/"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Dashboard
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/inventory"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Inventory
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/orders"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Orders
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/orders/flagged"
                   className="block rounded-md px-3 py-2 pl-6 text-xs hover:bg-muted"
                 >
                   Flagged Orders
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/orders/failed"
                   className="block rounded-md px-3 py-2 pl-6 text-xs hover:bg-muted"
                 >
                   Failed Orders
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/sync-history"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Sync History
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/invoices"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Invoices
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
+                  href="/multi-box"
+                  className="block rounded-md px-3 py-2 pl-6 text-xs hover:bg-muted"
+                >
+                  Multi-Box Orders
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/commission-orders"
+                  className="block rounded-md px-3 py-2 pl-6 text-xs hover:bg-muted"
+                >
+                  Commission Orders
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/cost-sheet"
+                  className="block rounded-md px-3 py-2 hover:bg-muted"
+                >
+                  Cost Sheet
+                </Link>
+              </li>
+              <li>
+                <Link
                   href="/settings"
                   className="block rounded-md px-3 py-2 hover:bg-muted"
                 >
                   Settings
-                </a>
+                </Link>
               </li>
               <li>
-                <a
+                <Link
                   href="/settings/supplier-aliases"
                   className="block rounded-md px-3 py-2 pl-6 text-xs hover:bg-muted"
                 >
                   Supplier Aliases
-                </a>
+                </Link>
               </li>
             </ul>
           </nav>

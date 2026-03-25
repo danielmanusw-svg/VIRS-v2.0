@@ -8,6 +8,7 @@ export interface ShopifyLineItem {
   quantity: number;
   price: string;
   total_discount?: string | null;
+  discount_allocations?: { amount: string }[];
   fulfillment_service: string | null;
 }
 
@@ -23,6 +24,7 @@ export interface ShopifyOrder {
   order_number: number;
   financial_status: string | null;
   fulfillment_status: string | null;
+  cancelled_at: string | null;
   created_at: string;
   shipping_address: {
     country_code: string;
@@ -60,6 +62,20 @@ export async function fetchShopifyOrdersBefore(
       status: "any",
       created_at_max: beforeDate,
       order: "created_at desc",
+    },
+    (data) => data.orders
+  );
+}
+
+export async function fetchShopifyOrdersByQuery(
+  query: string
+): Promise<ShopifyOrder[]> {
+  return shopifyFetchAllPages<ShopifyOrdersResponse, ShopifyOrder>(
+    "orders.json",
+    {
+      limit: "250",
+      status: "any",
+      query,
     },
     (data) => data.orders
   );

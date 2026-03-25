@@ -29,6 +29,20 @@
       "when": 1772642446053,
       "tag": "0003_redundant_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1772721651954,
+      "tag": "0004_abandoned_the_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1772726583430,
+      "tag": "0005_nostalgic_husk",
+      "breakpoints": true
     }
   ]
 }

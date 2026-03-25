@@ -146,6 +146,7 @@ export async function processOneOrder(
           .set({
             financial_status: so.financial_status,
             fulfillment_status: so.fulfillment_status,
+            cancelled_at: so.cancelled_at ?? null,
             updated_at: new Date().toISOString(),
           })
           .where(eq(orders.shopify_order_id, shopifyId));
@@ -189,6 +190,7 @@ export async function processOneOrder(
       fulfillment_status: so.fulfillment_status,
       shopify_created_at: so.created_at,
       is_shipbob_fulfilled: isShipBobFulfilled,
+      cancelled_at: so.cancelled_at ?? null,
     })
     .returning({ id: orders.id });
 
@@ -218,6 +220,10 @@ export async function processOneOrder(
       }
     }
 
+    // Calculate total discount including allocations
+    const discountAllocationsTotal = li.discount_allocations?.reduce((sum, d) => sum + parseFloat(d.amount), 0) || 0;
+    const totalDiscount = parseFloat(li.total_discount || "0") + discountAllocationsTotal;
+
     // Insert line item with cost snapshot and Shopify price
     await db.insert(orderLineItems).values({
       order_id: insertedOrder.id,
@@ -227,7 +233,7 @@ export async function processOneOrder(
       sku: li.sku,
       quantity: li.quantity,
       supplier_cost_snapshot: supplierCostSnapshot,
-      line_price: Math.max(0, (parseFloat(li.price) * li.quantity - parseFloat(li.total_discount || "0")) / (li.quantity || 1)),
+      line_price: Math.max(0, (parseFloat(li.price) * li.quantity - totalDiscount) / (li.quantity || 1)),
     });
 
     // Deduct stock (only for known variants), applying bundle multiplier

@@ -1,81 +1,98 @@
-# VIRS Finance & Invoice Rules
+# VIRS Finance & Invoice Rules - Final Canonical Version
 
-This document outlines the core business logic used by VIRS to generate the **Verification Invoice** and calculate order costs. It serves as the single source of truth for how Shopify orders are mapped to the supplier's billing format.
+This document is the absolute **single source of truth** for how the VIRS backend parses Shopify Orders, groups products, counts commission, and calculates the final Multi-Box Invoice. 
 
----
-
-## 1. Supplier Aliases (Product Mapping)
-To match the supplier's invoice, Shopify product variants must be mapped to specific **Invoice Categories** (Supplier Aliases).
-- **Unmapped Products:** Any product variant not explicitly mapped to a Supplier Alias will appear in the "Unmapped Items" section of the invoice and will **not** be calculated in the main invoice tables.
-- **Grouped Products:** Multiple variants can be mapped to a single alias (e.g., all adapter variants mapped to "All Adapters").
+If any older documents contradict this one, **this document takes precedence**.
 
 ---
 
-## 2. Market (Country) Ordering
-For each Supplier Alias, the invoice breaks down quantities by market (shipping destination). The markets are strictly ordered to match the supplier's visual layout.
-- The default priority is: **UK, EU, US, AU**. *(Note: Some specific products like 360 Adapters or Bath Filters have slightly different hardcoded orderings to match the real invoice).*
-- If an order ships to a country outside these four, it is grouped under **"Other"**.
+## 1. Zero-Price £0.00 Cartridge Exclusion (The Golden Rule)
+Any `Cartridge` line item that carries a price of exactly **£0.00** (e.g., from shipping/promotional replacements or test carts) is **completely ignored** by the system.
+* It does NOT count towards Tap Filter Sets.
+* It does NOT trigger a box or count towards Multi-Box rules.
+* It does NOT count as a "Commissionable Product".
 
 ---
 
-## 3. The "Set" Calculation Logic
-The supplier groups products into "Sets" based on the number of filters/cartridges included in a single shipped box. This logic is crucial for matching the unit price.
+## 2. Supplier Labels and Aggregation
+To match the supplier's literal PDF invoice, Shopify line items are aggregated and grouped into one of 13 primary "**Supplier Labels**":
+1. Stainless Steel
+2. 360° Adapters
+3. Shower Filter
+4. Plastic Filter
+5. Plastic Screen
+6. All Adapters
+7. Shower Filter Cartridge
+8. Plastic and Stainless Steel Cartridges
+9. Bath Filter
+10. Small Bottle
+11. 650ml Bottle
+12. 1L Bottle
+13. Black New Plastic Stock
 
-### A. Tap Filters (Stainless Steel & Plastic Filter)
-1. **Baseline Included Filters:** Every single tap filter unit (Stainless Steel or Plastic) includes **2 free cartridges** in the box by default.
-2. **Absorbing Paid Cartridges:** If a customer buys a Tap Filter AND additional PAID Cartridges in the *same order*, those extra cartridges are put into the *same boxes*.
-   - If there is only 1 filter, all cartridges go into its box: `Set Size = 2 (baseline) + (Purchased Cartridge Quantity × Cartridge Multiplier)`
-   - If there are multiple filters of the same type, the cartridges are **distributed evenly** across the boxes. Any remainders are added to the last box(es).
-   - *Example 1:* 1 Stainless Steel Filter + 1 "6 Month Supply" (multiplier = 2) = **1x Set of 4**.
-   - *Example 2:* 2 Stainless Steel Filters + 1 "6 Month Supply" (multiplier = 2) = **2x Set of 3** (1 extra cartridge each).
-   - *Example 3:* 3 Stainless Steel Filters + 1 "1 Year Supply" (multiplier = 4) = **2x Set of 3, 1x Set of 4**.
-3. **Mixed Tap Filters:** If an order contains *both* a Stainless Steel Filter and a Plastic Filter, they are shipped in **separate boxes**.
-   - In this case, **no paid cartridges are absorbed**. The Stainless Steel filter gets a Set of 2, the Plastic Filter gets a Set of 2, and the paid cartridges remain separate.
-
-### B. Cartridge Multipliers (`bundle_multiplier`)
-In the VIRS Inventory, each Cartridge variant MUST have a `bundle_multiplier` set. This multiplier represents how many actual filters are in that variant.
-- **3 Month Supply:** Multiplier = **1**
-- **6 Month Supply:** Multiplier = **2**
-- **1 Year Supply:** Multiplier = **4**
-*Note: This multiplier does NOT multiply the price; it only tells the invoice generator how many physical filters to add to the "Set Size".*
-
-### C. Standalone Cartridges
-If a customer orders ONLY cartridges (no tap filters in the order):
-- The cartridges are grouped under the "Plastic and Stainless Steel Cartridges" category.
-- **Formula:** `Set Size = Purchased Cartridge Quantity × Cartridge Multiplier`
-- *Example:* 2 units of "1 Year Supply" (multiplier = 4) = **1x Set of 8**.
+**Market Ordering:** Items under a label are further separated by the Market (Country) they shipped to. The standard display order is: `UK`, `EU`, `US`, `AU`.
 
 ---
 
-## 4. Shipping Costs
-Shipping is charged **per order**, not per product.
-- **Multiple Products:** If an order contains multiple products, the shipping cost is only applied **once** to that order.
-- **Pre-bought Items (e.g., Bottles):** Certain items are marked as "pre-bought" (stock already paid for). For these items, the invoice should ideally only calculate the shipping cost, not the product cost (unless they are bundled with standard items, in which case the standard item's shipping covers the box).
+## 3. The "Set Size" Logic (Tap Filters & Cartridges)
+The supplier bills tap filters and cartridges in bundled "Sets."
+* **Tap Filter Baseline:** Every single Stainless Steel or Plastic tap filter physically includes **2 free cartridges**.
+* **Cartridge Multipliers:** Cartridges are sold in supply packs. A "3 Month Supply" is 1 cartridge. A "6 Month Supply" is 2 cartridges. A "1 Year Supply" is 4 cartridges.
+
+**How Sets are Calculated:**
+1. **Absorbing Paid Cartridges:** If a customer buys a Tap Filter AND extra *paid* Cartridges in the same order, the extra cartridges do NOT get their own box. They are packed *inside* the Tap Filter's box.
+   * *Example:* 1 Tap Filter + 1 "1-Year Supply" (4 cartridges) = **"Set of 6"** (2 baseline + 4 extra).
+2. **Multiple Tap Filters:** If an order has 2 Tap Filters and extra cartridges, the extra cartridges are distributed evenly across the filters.
+   * *Example:* 2 Tap Filters + 3 extra cartridges. Tap A gets 1 extra. Tap B gets 2 extra. Result: One **Set of 4** and one **Set of 3**.
+3. **Cartridges Only:** If an order has NO tap filters but buys cartridges, they are added up visually under the `Plastic and Stainless Steel Cartridges` label.
+   * *Example:* No Tap Filter + 1 "1-Year Supply" (4 cartridges) = **"Set of 4"**.
 
 ---
 
-## 5. Excluded Orders & Lines
-- **ShipBob Fulfilled Orders:** Any order fulfilled by ShipBob (indicated by fulfillment names containing "shipbob") is entirely excluded from the invoice, as it ships from existing local inventory rather than directly from the supplier.
-- **Zero-Price / Cancelled Lines:** Line items with an effective price of £0 (such as cancelled cartridges added during ShipBob checkout checks or free promotional items) do **not** contribute to the invoice cartridge count. Only paid cartridge lines are absorbed into tap filter sets or counted individually.
-- **Zero Value Orders:** Orders with a total price of 0.00 (100% discount or replacements) are automatically excluded from the invoice calculation entirely.
+## 4. Where Pricing Comes From
+Pricing is strictly deterministic and looks exactly at the mapped **`FINAL Price Sheet FP fix.csv`**.
+
+**The lookup key is:** `[Supplier Label] + [Market Code] + [Set Size (if applicable)]`.
+If an exact match is found, the **Goods Cost** and **Shipping Cost** are pulled directly from the CSV into the Verification table. If a match is missing, the UI explicitly flags it as `<Missing>`.
 
 ---
 
-## Quick Reference Guide (Invoice Math)
+## 5. Orders & Commission
+There are two distinct Commission calculations shown on the invoice.
 
-Use this table to quickly verify if the "Set Size" on the invoice is correct based on a customer's order.
+### A. Commission (Per Order)
+* **Rule:** A flat fee charged linearly per *distinct* Shopify order.
+* **Calculation:** `Total Unique Order Numbers × £0.80`.
 
-| Order Contents | Tap Filter Set Size | Cartridge Set Size | Invoice Breakdown |
-| :--- | :--- | :--- | :--- |
-| **1 Tap Filter only** | 2 | - | 1x Tap Filter (Set: 2) |
-| **2 Tap Filters (Same type)** | 2 each | - | 2x Tap Filter (Set: 2) |
-| **1 Stainless Steel + 1 Plastic** | SS: 2 <br> Plastic: 2 | - | 1x SS Filter (Set: 2)<br>1x Plastic Filter (Set: 2) |
-| **1 Tap Filter + 3 Month supply** | 3 | - | 1x Tap Filter (Set: 3) |
-| **1 Tap Filter + 6 Month supply** | 4 | - | 1x Tap Filter (Set: 4) |
-| **1 Tap Filter + 1 Year supply** | 6 | - | 1x Tap Filter (Set: 6) |
-| **2 Tap Filters + 6 Month supply** | 3 each | - | 2x Tap Filter (Set: 3) |
-| **3 Tap Filters + 1 Year supply** | 3, 3, 4 | - | 2x Tap Filter (Set: 3)<br>1x Tap Filter (Set: 4) |
-| **1 SS + 1 Plastic + 6 Month Supply** | SS: 2 <br> Plastic: 2 | 2 | 1x SS Filter (Set: 2)<br>1x Plastic Filter (Set: 2)<br>1x Cartridges (Set: 2) |
-| **No Filter + 6 Month Supply** | - | 2 | 1x Cartridges (Set: 2) |
-| **No Filter + 1 Year Supply** | - | 4 | 1x Cartridges (Set: 4) |
-| **No Filter + 2x 1 Year Supply** | - | 8 | 1x Cartridges (Set: 8) |
+### B. Commission (xProduct)
+* **Rule:** A fee charged based on the number of physical "commissionable products" shipped.
+* **No Set Aggregation:** Unlike Multi-Box logic, xProduct commission DOES NOT group products into sets. Every individual product purchased counts on its own.
+* **Zero-Price Logic:** £0.00 items do NOT exist for this calculation and are ignored.
+* **Calculation:** `Commissionable Quantity × £0.80`.
+
+> ⚠️ **xProduct is NOT the same as Multi-Box logic.** Multi-Box only asks "how many physical shipping *boxes*?" — adapters tuck in for free and don't add a box, and extra cartridges are absorbed into the Tap Filter's box. xProduct asks "how many commissionable *products*?" — every distinct product counts individually regardless of how boxes are packed.
+
+**Examples:**
+* **1 Plastic Filter + 4 paid cartridges** → **2 products** (1 tap filter + 1 cartridge pack).
+* **1 Plastic Filter + 1 × 360° Adapter** → **2 products** (1 tap filter + 1 adapter).
+* **1 Shower Filter** → **1 product**.
+
+---
+
+## 6. Multi-Box Orders
+This table specifically highlights orders that require the warehouse to manually pack more than one physical shipping box.
+
+**The Box Logic:**
+1. **Large Products = 1 Box:** Shower Filters, Bath Filters, Bottles, and Plastic Screens each occupy 1 box.
+2. **Sets = 1 Box:** A Tap Filter + all of its absorbed purchased cartridges equals exactly 1 box.
+3. **The Adapter Tuck-in:** Small items (`360° Adapters` and `All Adapters`) are so small they "tuck into" any Large Product or Set box for free.
+   * *Example:* 1 Shower Filter + 5 Adapters = **1 Box**. 
+4. **Standalone Small Items:** If an order consists *only* of Adapters, they all combine into exactly **1 Box**.
+5. **Display:** The UI only displays orders where the total calculated `box_count` is 2 or higher.
+
+---
+
+## 7. Draft vs. Confirmed Invoices
+* **Draft Invoices:** When an invoice is in the `draft` state, opening it will dynamically pull the **newest** schema, calculations, and rules.
+* **Confirming:** Clicking "Confirm" saves a `snapshot` stringified JSON layout to the database. This explicitly freezes the visual UI formatting, exact quantities, and mapped prices forever. 
+* **Viewing:** Opening a confirmed invoice reads directly from that frozen snapshot to guarantee historical accuracy.

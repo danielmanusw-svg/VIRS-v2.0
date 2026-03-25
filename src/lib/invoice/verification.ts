@@ -11,6 +11,7 @@ export interface OrderCompletenessCheck {
 export interface QuantitySummaryCheck {
   total_line_items: number;
   total_quantity: number;
+  commissionable_quantity: number;
 }
 
 export interface MarketDistributionEntry {
@@ -81,6 +82,7 @@ export function buildVerificationReport(
   const quantity_summary: QuantitySummaryCheck = {
     total_line_items: lines.length,
     total_quantity: lines.reduce((sum, l) => sum + l.quantity, 0),
+    commissionable_quantity: calc.commissionable_product_count,
   };
 
   // 3. Market distribution — group by market, count distinct orders and total quantity

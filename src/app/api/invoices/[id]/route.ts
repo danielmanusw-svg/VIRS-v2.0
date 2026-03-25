@@ -6,6 +6,12 @@ import { aggregateByMasterProduct } from "@/lib/invoice/aggregator";
 import { aggregateBySupplierAlias } from "@/lib/invoice/aliasAggregator";
 import { buildVerificationReport } from "@/lib/invoice/verification";
 import type { InvoiceCalculation } from "@/lib/invoice/calculator";
+import {
+  buildInvoiceViewSnapshot,
+  parseInvoiceMetadata,
+  parseInvoiceViewSnapshot,
+  serializeInvoiceMetadata,
+} from "@/lib/invoice/snapshot";
 
 // GET: fetch a single invoice with its line items
 export async function GET(
@@ -31,11 +37,9 @@ export async function GET(
       .from(invoiceLineItems)
       .where(eq(invoiceLineItems.invoice_id, invoiceId));
 
-    const missingOrderNumbers: number[] = invoice.missing_order_numbers
-      ? JSON.parse(invoice.missing_order_numbers)
-      : [];
+    const { missing_order_numbers: missingOrderNumbers } =
+      parseInvoiceMetadata(invoice.missing_order_numbers);
 
-    // Reconstruct a calc-like object from stored data for aggregation + verification
     const calcLike: InvoiceCalculation = {
       lines: lines.map((l) => ({
         order_id: l.order_id,
@@ -48,29 +52,45 @@ export async function GET(
         supplier_cost: l.supplier_cost,
         shipping_cost: l.shipping_cost,
         line_total: l.line_total,
+        line_price: l.line_price,
       })),
       total_supplier_cost: invoice.total_supplier_cost,
       total_shipping_cost: invoice.total_shipping_cost,
       grand_total: invoice.grand_total,
       missing_order_numbers: missingOrderNumbers,
       distinct_order_count: invoice.distinct_order_count ?? new Set(lines.map((l) => l.order_number)).size,
+      commissionable_product_count: new Set(lines.map((l) => l.order_number)).size, // Placeholder, replaced below
+      order_commission_gbp: 0,
+      product_commission_gbp: 0,
       total_commission_gbp: invoice.total_commission_gbp ?? 0,
     };
 
-    const [productGroups, verification, aliasResult] = await Promise.all([
+    const [productGroups, aliasResult] = await Promise.all([
       aggregateByMasterProduct(calcLike.lines),
-      Promise.resolve(buildVerificationReport(calcLike, invoice.start_order_number, invoice.end_order_number)),
       aggregateBySupplierAlias(calcLike.lines),
     ]);
+
+    // Override naive counts with set-aware counts from the aggregator
+    calcLike.commissionable_product_count = aliasResult.commissionable_product_count;
+    calcLike.total_commission_gbp = calcLike.commissionable_product_count * 0.8;
+
+    const verification = buildVerificationReport(
+      calcLike,
+      invoice.start_order_number,
+      invoice.end_order_number
+    );
+
+    const rebuiltSnapshot = buildInvoiceViewSnapshot({
+      product_groups: productGroups,
+      verification,
+      aliasAggregation: aliasResult,
+    });
 
     return NextResponse.json({
       invoice,
       lines,
       missing_order_numbers: missingOrderNumbers,
-      product_groups: productGroups,
-      verification,
-      supplier_groups: aliasResult.groups,
-      unmapped_items: aliasResult.unmapped,
+      ...rebuiltSnapshot,
     });
   } catch (error) {
     const message =
@@ -88,7 +108,10 @@ export async function PATCH(
     const { id } = await params;
     const invoiceId = parseInt(id, 10);
     const body = await request.json();
-    const { status } = body as { status: "confirmed" | "void" };
+    const { status, snapshot: snapshotInput } = body as {
+      status: "confirmed" | "void";
+      snapshot?: unknown;
+    };
 
     if (!["confirmed", "void"].includes(status)) {
       return NextResponse.json(
@@ -118,6 +141,16 @@ export async function PATCH(
     const updates: Record<string, unknown> = { status };
     if (status === "confirmed") {
       updates.confirmed_at = new Date().toISOString();
+
+      const providedSnapshot = parseInvoiceViewSnapshot(snapshotInput);
+      if (providedSnapshot) {
+        const { missing_order_numbers: missingOrderNumbers } =
+          parseInvoiceMetadata(existing.missing_order_numbers);
+        updates.missing_order_numbers = serializeInvoiceMetadata(
+          missingOrderNumbers,
+          providedSnapshot
+        );
+      }
     }
 
     await db

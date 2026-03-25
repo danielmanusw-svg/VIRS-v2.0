@@ -31,9 +31,11 @@ interface Invoice {
   total_shipping_cost: number;
   grand_total: number;
   missing_order_numbers: string | null;
+  order_commission_gbp: number;
+  product_commission_gbp: number;
+  multi_box_count?: number;
   created_at: string;
   confirmed_at: string | null;
-  total_quantity: number;
 }
 
 const PAGE_SIZE = 100;
@@ -131,56 +133,76 @@ export default function InvoicesPage() {
                   <TableHead>ID</TableHead>
                   <TableHead>Order Range</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Products Sold</TableHead>
+                  <TableHead className="text-right">Total Commission</TableHead>
+                  <TableHead className="text-right">Total Commission xProduct</TableHead>
+                  <TableHead className="text-right">Difference Commission</TableHead>
+                  <TableHead className="text-right">Multi-Box Orders</TableHead>
                   <TableHead className="text-right">Grand Total</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {invoices.map((inv) => (
-                  <TableRow key={inv.id}>
-                    <TableCell className="font-mono">VIRS-{inv.id}</TableCell>
-                    <TableCell className="font-mono">
-                      #{inv.start_order_number} — #{inv.end_order_number}
-                    </TableCell>
-                    <TableCell>{statusBadge(inv.status)}</TableCell>
-                    <TableCell className="text-right font-mono">
-                      {inv.total_quantity}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      £{inv.grand_total.toFixed(2)}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {format(new Date(inv.created_at), "dd MMM yyyy")}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-2">
-                        <a href={`/invoices/${inv.id}`}>
-                          <Button variant="outline" size="sm">
-                            View
+                {invoices.map((inv) => {
+                  const originalComm = inv.order_commission_gbp;
+                  const commXProduct = inv.product_commission_gbp;
+                  const diffComm = commXProduct - originalComm;
+                  return (
+                    <TableRow key={inv.id}>
+                      <TableCell className="font-mono">VIRS-{inv.id}</TableCell>
+                      <TableCell className="font-mono">
+                        #{inv.start_order_number} — #{inv.end_order_number}
+                      </TableCell>
+                      <TableCell>{statusBadge(inv.status)}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        £{originalComm.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        £{commXProduct.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-red-600 font-bold">
+                        £{diffComm.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {inv.multi_box_count ?? 0}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        £{inv.grand_total.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {(() => {
+                          const d = inv.created_at ? new Date(inv.created_at) : null;
+                          return d && !isNaN(d.getTime()) ? format(d, "dd MMM yyyy") : "—";
+                        })()}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-2">
+                          <a href={`/invoices/${inv.id}`}>
+                            <Button variant="outline" size="sm">
+                              View
+                            </Button>
+                          </a>
+                          <a
+                            href={`/api/invoices/${inv.id}/pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <Button variant="outline" size="sm">
+                              PDF
+                            </Button>
+                          </a>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => setDeleteConfirm(inv.id)}
+                          >
+                            Delete
                           </Button>
-                        </a>
-                        <a
-                          href={`/api/invoices/${inv.id}/pdf`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <Button variant="outline" size="sm">
-                            PDF
-                          </Button>
-                        </a>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setDeleteConfirm(inv.id)}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>

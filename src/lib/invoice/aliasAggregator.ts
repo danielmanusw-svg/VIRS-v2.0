@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { supplierAliases, productVariants } from "@/db/schema";
 import { inArray } from "drizzle-orm";
 import type { InvoiceLineResult } from "./calculator";
+import { lookupPrice, checkNotifications } from "./priceSheet";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -17,6 +18,15 @@ const FREE_CARTRIDGES_PER_TAP_FILTER = 2;
 
 /** The supplier alias label for cartridge products */
 const CARTRIDGE_LABEL = "Plastic and Stainless Steel Cartridges";
+
+/** Small items that can be "tucked into" larger product boxes at no extra box cost */
+const SMALL_ITEM_LABELS = new Set(["360° Adapters", "All Adapters"]);
+
+/**
+ * xProduct commission should not count adapter-only labels.
+ * They still matter for packing logic, but not for commission.
+ */
+const XPRODUCT_EXCLUDED_LABELS = new Set(["360° Adapters", "All Adapters"]);
 
 /** All labels that participate in set logic */
 const SET_ELIGIBLE_LABELS = new Set([...TAP_FILTER_LABELS, CARTRIDGE_LABEL]);
@@ -63,6 +73,14 @@ export interface AliasSetBreakdown {
     quantity: number;
     /** Individual line items contributing to this set size */
     lines: AliasLineDetail[];
+    /** Goods cost per set from price sheet */
+    goods_cost_per_set: number;
+    /** Shipping cost per set from price sheet */
+    shipping_cost_per_set: number;
+    /** Total cost for all sets of this size: (goods + shipping) × quantity */
+    total_cost: number;
+    /** True if shipping price was missing from the price sheet */
+    missing_price: boolean;
 }
 
 export interface AliasMarketBreakdown {
@@ -71,6 +89,14 @@ export interface AliasMarketBreakdown {
     lines: AliasLineDetail[];
     /** Set breakdown — only present for set-eligible supplier labels */
     sets?: AliasSetBreakdown[];
+    /** Per-unit goods cost (non-set-eligible products only) */
+    goods_cost_per_unit: number;
+    /** Per-unit shipping cost (non-set-eligible products only) */
+    shipping_cost_per_unit: number;
+    /** Total cost for this market row */
+    total_cost: number;
+    /** True if shipping price was missing from the price sheet */
+    missing_price: boolean;
 }
 
 export interface AliasGroup {
@@ -84,6 +110,12 @@ export interface AliasGroup {
     lines: AliasLineDetail[];
     /** Whether this group uses set-based aggregation */
     is_set_eligible: boolean;
+    /** Total goods cost for this product group */
+    total_goods_cost: number;
+    /** Total shipping cost for this product group */
+    total_shipping_cost: number;
+    /** Total cost (goods + shipping) for this product group */
+    total_cost: number;
 }
 
 export interface UnmappedItem {
@@ -100,6 +132,25 @@ export interface AliasAggregationResult {
     groups: AliasGroup[];
     /** Line items whose variant could not be resolved to any supplier alias */
     unmapped: UnmappedItem[];
+    /** Notification messages for missing prices, flagged products, etc. */
+    notifications: string[];
+    /** Grand totals computed from the price sheet */
+    totals: {
+        total_goods_cost: number;
+        total_shipping_cost: number;
+        total_cost: number;
+    };
+    /** Breakdown of orders containing > 1 box (price sheet row) */
+    multi_box_orders: MultiBoxOrder[];
+    /** Total number of products (counting sets as 1) for commission calculation */
+    commissionable_product_count: number;
+}
+
+export interface MultiBoxOrder {
+    order_number: number;
+    market_code: string;
+    box_count: number;
+    boxes: { label: string; quantity: number }[];
 }
 
 // ─── Resolved line (internal) ───────────────────────────────────────────────
@@ -252,8 +303,8 @@ export async function aggregateBySupplierAlias(
     const orderSetInfo = new Map<number, Map<string, number[]>>();
 
     for (const [orderNum, orderLines] of orderGroups) {
-        // Find tap filter lines and cartridge lines in this order
-        const tapFilterLines = orderLines.filter((rl) => TAP_FILTER_LABELS.has(rl.label));
+        // Find ONLY PAID tap filter lines and cartridge lines in this order
+        const tapFilterLines = orderLines.filter((rl) => TAP_FILTER_LABELS.has(rl.label) && rl.line.line_price > 0);
         // Only count PAID cartridge lines (line_price > 0)
         const cartridgeLines = orderLines.filter(
             (rl) => rl.label === CARTRIDGE_LABEL && rl.line.line_price > 0
@@ -328,6 +379,84 @@ export async function aggregateBySupplierAlias(
         }
     }
 
+    let commissionableProductCount = 0;
+    for (const [, orderLines] of orderGroups) {
+        const hasTapFilter = orderLines.some(
+            (rl) => rl.line.line_price > 0 && TAP_FILTER_LABELS.has(rl.label)
+        );
+
+        for (const rl of orderLines) {
+            if (rl.line.line_price <= 0 || XPRODUCT_EXCLUDED_LABELS.has(rl.label)) {
+                continue;
+            }
+
+            if (hasTapFilter && rl.label === CARTRIDGE_LABEL) {
+                continue;
+            }
+
+            commissionableProductCount += rl.line.quantity;
+        }
+    }
+
+    // 6.5 Build Multi-Box order breakdown
+    const multiBoxOrders: MultiBoxOrder[] = [];
+    for (const [orderNum, orderLines] of orderGroups) {
+        const market_code = orderLines[0]?.line.market_code ?? "Unknown";
+        let large_box_count = 0;
+        let has_small_items = false;
+        const boxesMap = new Map<string, number>();
+
+        const addBox = (labelText: string, qty: number) => {
+            boxesMap.set(labelText, (boxesMap.get(labelText) ?? 0) + qty);
+        };
+
+        // 1. Process non-set lines
+        for (const rl of orderLines) {
+            // Skip if zero-price "free" item that shouldn't have a box
+            if (rl.line.line_price <= 0) continue;
+
+            if (SMALL_ITEM_LABELS.has(rl.label)) {
+                has_small_items = true;
+                addBox(rl.label, rl.line.quantity);
+            } else if (!SET_ELIGIBLE_LABELS.has(rl.label)) {
+                large_box_count += rl.line.quantity;
+                addBox(rl.label, rl.line.quantity);
+            }
+        }
+
+        // 2. Process set lines (Large items)
+        const setsForOrder = orderSetInfo.get(orderNum);
+        if (setsForOrder) {
+            for (const [setLabel, setSizes] of setsForOrder) {
+                for (const sz of setSizes) {
+                    if (sz > 0) { // Don't create a box for a "set of 0"
+                        const boxLabel = `${setLabel} (Set of ${sz})`;
+                        large_box_count += 1;
+                        addBox(boxLabel, 1);
+                    }
+                }
+            }
+        }
+
+        // 3. Final Box Count Calculation
+        // - If large items exist, small items are "tucked in" and don't add boxes
+        // - If ONLY small items exist, they all fit in 1 box
+        let final_box_count = large_box_count;
+        if (large_box_count === 0 && has_small_items) {
+            final_box_count = 1;
+        }
+
+        if (final_box_count > 1) {
+            const boxes = Array.from(boxesMap.entries()).map(([label, quantity]) => ({ label, quantity }));
+            multiBoxOrders.push({
+                order_number: orderNum,
+                market_code,
+                box_count: final_box_count,
+                boxes
+            });
+        }
+    }
+
     // 7. Build groups — accumulate by (label, market) but skip absorbed cartridge lines
     //    Also track set breakdowns per (label, market, order → set_size)
     const groupMap = new Map<
@@ -346,8 +475,8 @@ export async function aggregateBySupplierAlias(
     const cartridgeIdxByOrder = new Map<number, number>();
 
     for (const rl of resolvedLines) {
-        // Skip zero-price cartridge lines entirely (cancelled/virtual lines)
-        if (rl.label === CARTRIDGE_LABEL && rl.line.line_price <= 0) {
+        // Skip zero-price items entirely (cancelled/virtual lines / free cartridges)
+        if (rl.line.line_price <= 0) {
             continue;
         }
 
@@ -402,19 +531,41 @@ export async function aggregateBySupplierAlias(
         }
     }
 
-    // 8. Build output
+    // 8. Build output with pricing
     const groups: AliasGroup[] = [];
+    const notifications: string[] = [];
+    const seenNotifications = new Set<string>();
+
+    let grandTotalGoods = 0;
+    let grandTotalShipping = 0;
+
     for (const [label, markets] of groupMap) {
         const isSetEligible = SET_ELIGIBLE_LABELS.has(label);
         const allLines: AliasLineDetail[] = [];
+        let groupGoodsCost = 0;
+        let groupShippingCost = 0;
+
         const marketBreakdowns: AliasMarketBreakdown[] = [...markets.entries()]
             .map(([market_code, data]) => {
                 allLines.push(...data.lines);
+
+                // Check notifications for this (label, market) combo
+                const msgs = checkNotifications(label, market_code);
+                for (const msg of msgs) {
+                    if (!seenNotifications.has(msg)) {
+                        seenNotifications.add(msg);
+                        notifications.push(msg);
+                    }
+                }
 
                 const breakdown: AliasMarketBreakdown = {
                     market_code,
                     quantity: data.quantity,
                     lines: data.lines,
+                    goods_cost_per_unit: 0,
+                    shipping_cost_per_unit: 0,
+                    total_cost: 0,
+                    missing_price: false,
                 };
 
                 // Build set breakdown for set-eligible labels
@@ -432,17 +583,70 @@ export async function aggregateBySupplierAlias(
 
                         breakdown.sets = [...setSizeMap.entries()]
                             .sort((a, b) => a[0] - b[0])
-                            .map(([set_size, { count, lines: setLines }]) => ({
-                                set_size,
-                                quantity: count,
-                                lines: setLines,
-                            }));
+                            .map(([set_size, { count, lines: setLines }]) => {
+                                const price = lookupPrice(label, set_size, market_code);
+                                const goodsCost = price?.goods_cost ?? 0;
+                                const shippingCost = price?.shipping_cost ?? 0;
+                                const missingPrice = price === null || price.missing_shipping;
+                                const totalCost = (goodsCost + shippingCost) * count;
+
+                                if (missingPrice) {
+                                    const msg = `Missing price: '${label}' set of ${set_size} in ${market_code}`;
+                                    if (!seenNotifications.has(msg)) {
+                                        seenNotifications.add(msg);
+                                        notifications.push(msg);
+                                    }
+                                }
+
+                                groupGoodsCost += goodsCost * count;
+                                groupShippingCost += shippingCost * count;
+
+                                return {
+                                    set_size,
+                                    quantity: count,
+                                    lines: setLines,
+                                    goods_cost_per_set: goodsCost,
+                                    shipping_cost_per_set: shippingCost,
+                                    total_cost: totalCost,
+                                    missing_price: missingPrice,
+                                };
+                            });
+
+                        // Sum set costs into the market breakdown
+                        breakdown.total_cost = breakdown.sets.reduce((s, set) => s + set.total_cost, 0);
+                        breakdown.missing_price = breakdown.sets.some(s => s.missing_price);
                     }
+                } else {
+                    // Non-set-eligible: price per unit
+                    const price = lookupPrice(label, 1, market_code);
+                    const goodsCost = price?.goods_cost ?? 0;
+                    const shippingCost = price?.shipping_cost ?? 0;
+                    const missingPrice = price === null || price.missing_shipping;
+
+                    if (missingPrice) {
+                        const msg = `Missing price: '${label}' in ${market_code}`;
+                        if (!seenNotifications.has(msg)) {
+                            seenNotifications.add(msg);
+                            notifications.push(msg);
+                        }
+                    }
+
+                    breakdown.goods_cost_per_unit = goodsCost;
+                    breakdown.shipping_cost_per_unit = shippingCost;
+                    breakdown.total_cost = (goodsCost + shippingCost) * data.quantity;
+                    breakdown.missing_price = missingPrice;
+
+                    groupGoodsCost += goodsCost * data.quantity;
+                    groupShippingCost += shippingCost * data.quantity;
                 }
 
                 return breakdown;
             })
             .sort((a, b) => marketSortPos(label, a.market_code) - marketSortPos(label, b.market_code));
+
+        const groupTotalCost = groupGoodsCost + groupShippingCost;
+        grandTotalGoods += groupGoodsCost;
+        grandTotalShipping += groupShippingCost;
 
         groups.push({
             supplier_label: label,
@@ -450,6 +654,9 @@ export async function aggregateBySupplierAlias(
             total_quantity: marketBreakdowns.reduce((sum, m) => sum + m.quantity, 0),
             lines: allLines,
             is_set_eligible: isSetEligible,
+            total_goods_cost: groupGoodsCost,
+            total_shipping_cost: groupShippingCost,
+            total_cost: groupTotalCost,
         });
     }
 
@@ -459,5 +666,13 @@ export async function aggregateBySupplierAlias(
     return {
         groups,
         unmapped: [...unmappedMap.values()],
+        notifications,
+        totals: {
+            total_goods_cost: grandTotalGoods,
+            total_shipping_cost: grandTotalShipping,
+            total_cost: grandTotalGoods + grandTotalShipping,
+        },
+        multi_box_orders: multiBoxOrders.sort((a, b) => b.box_count - a.box_count),
+        commissionable_product_count: commissionableProductCount,
     };
 }

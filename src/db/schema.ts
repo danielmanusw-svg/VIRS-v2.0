@@ -111,6 +111,7 @@ export const orders = sqliteTable("orders", {
     .notNull()
     .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
   is_shipbob_fulfilled: integer("is_shipbob_fulfilled", { mode: "boolean" }),
+  cancelled_at: text("cancelled_at"),
 });
 
 export const orderLineItems = sqliteTable("order_line_items", {
@@ -217,6 +218,7 @@ export const invoiceLineItems = sqliteTable("invoice_line_items", {
   supplier_cost: real("supplier_cost").notNull().default(0),
   shipping_cost: real("shipping_cost").notNull().default(0),
   line_total: real("line_total").notNull().default(0),
+  line_price: real("line_price").notNull().default(0),
 });
 
 // ─── Master Products ───────────────────────────────────────────────────────

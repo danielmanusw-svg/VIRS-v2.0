@@ -21,6 +21,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import type { MultiBoxOrder } from "@/lib/invoice/aliasAggregator";
+import staticInvoice13Data from "../13-static-data.json";
 
 interface InvoiceLine {
   id: number;
@@ -33,6 +35,7 @@ interface InvoiceLine {
   supplier_cost: number;
   shipping_cost: number;
   line_total: number;
+  line_price: number;
 }
 
 interface InvoiceRecord {
@@ -102,6 +105,7 @@ interface VerificationReport {
   quantity_summary: {
     total_line_items: number;
     total_quantity: number;
+    commissionable_quantity: number;
   };
   market_distribution: {
     markets: MarketDistributionEntry[];
@@ -130,6 +134,9 @@ interface AliasSetBreakdown {
   set_size: number;
   quantity: number;
   lines: AliasLineDetail[];
+  goods_cost_per_set: number;
+  shipping_cost_per_set: number;
+  total_cost: number;
 }
 
 interface AliasMarketBreakdown {
@@ -137,6 +144,9 @@ interface AliasMarketBreakdown {
   quantity: number;
   lines: AliasLineDetail[];
   sets?: AliasSetBreakdown[];
+  goods_cost_per_unit: number;
+  shipping_cost_per_unit: number;
+  total_cost: number;
 }
 
 interface AliasGroup {
@@ -145,6 +155,9 @@ interface AliasGroup {
   total_quantity: number;
   lines: AliasLineDetail[];
   is_set_eligible: boolean;
+  total_goods_cost: number;
+  total_shipping_cost: number;
+  total_cost: number;
 }
 
 interface UnmappedItem {
@@ -156,6 +169,19 @@ interface UnmappedItem {
   order_numbers: number[];
 }
 
+interface OverchargedOrderItem {
+  title: string;
+  quantity: number;
+}
+
+interface OverchargedOrder {
+  order_number: number;
+  market_code: string;
+  product_count: number;
+  overcharge: number;
+  items: OverchargedOrderItem[];
+}
+
 interface InvoiceDetail {
   invoice: InvoiceRecord;
   lines: InvoiceLine[];
@@ -164,9 +190,8 @@ interface InvoiceDetail {
   verification: VerificationReport;
   supplier_groups: AliasGroup[];
   unmapped_items: UnmappedItem[];
+  multi_box_orders: MultiBoxOrder[];
 }
-
-const MARKET_CODES = ["EU", "UK", "US", "AU"] as const;
 
 const PRODUCT_ORDER = [
   "Stainless Steel",
@@ -198,7 +223,71 @@ function gbp(value: number): string {
   return `£${value.toFixed(2)}`;
 }
 
-import staticInvoice13Data from "../13-static-data.json";
+const TAP_FILTER_SUPPLIER_LABELS = new Set(["stainless steel", "plastic filter"]);
+const CARTRIDGE_SUPPLIER_LABEL = "plastic and stainless steel cartridges";
+
+function isExcludedXProductSupplierLabel(label: string): boolean {
+  return label.toLowerCase().includes("adapter");
+}
+
+function buildOverchargedOrders(supplierGroups: AliasGroup[]): OverchargedOrder[] {
+  const orderMap = new Map<number, OverchargedOrder>();
+  const tapFilterOrders = new Set<number>();
+
+  for (const group of supplierGroups) {
+    if (!TAP_FILTER_SUPPLIER_LABELS.has(group.supplier_label.toLowerCase())) {
+      continue;
+    }
+
+    for (const market of group.markets) {
+      for (const line of market.lines) {
+        tapFilterOrders.add(line.order_number);
+      }
+    }
+  }
+
+  for (const group of supplierGroups) {
+    const supplierLabel = group.supplier_label.toLowerCase();
+    if (isExcludedXProductSupplierLabel(supplierLabel)) {
+      continue;
+    }
+
+    for (const market of group.markets) {
+      for (const line of market.lines) {
+        if (
+          supplierLabel === CARTRIDGE_SUPPLIER_LABEL &&
+          tapFilterOrders.has(line.order_number)
+        ) {
+          continue;
+        }
+
+        const existing = orderMap.get(line.order_number) ?? {
+          order_number: line.order_number,
+          market_code: market.market_code ?? "Unknown",
+          product_count: 0,
+          overcharge: 0,
+          items: [],
+        };
+
+        existing.product_count += line.quantity;
+        existing.items.push({
+          title: line.title,
+          quantity: line.quantity,
+        });
+
+        orderMap.set(line.order_number, existing);
+      }
+    }
+  }
+
+  return [...orderMap.values()]
+    .filter((order) => order.product_count > 1)
+    .map((order) => ({
+      ...order,
+      overcharge: order.product_count * 0.8 - 0.8,
+    }))
+    .sort((a, b) => b.overcharge - a.overcharge || a.order_number - b.order_number);
+}
 
 export default function InvoiceDetailPage() {
   const params = useParams();
@@ -206,6 +295,7 @@ export default function InvoiceDetailPage() {
   const [data, setData] = useState<InvoiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
+  const [expandedOverchargedOrders, setExpandedOverchargedOrders] = useState<Set<number>>(new Set());
   const [expandedMarkets, setExpandedMarkets] = useState<Set<string>>(new Set());
 
   const invoiceId = params.id as string;
@@ -213,7 +303,7 @@ export default function InvoiceDetailPage() {
   const fetchInvoice = useCallback(async () => {
     try {
       if (invoiceId === "13") {
-        setData(staticInvoice13Data as InvoiceDetail);
+        setData(staticInvoice13Data as unknown as InvoiceDetail);
         return;
       }
 
@@ -246,6 +336,15 @@ export default function InvoiceDetailPage() {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleOverchargedOrderExpand(orderNum: number) {
+    setExpandedOverchargedOrders((prev) => {
+      const next = new Set(prev);
+      if (next.has(orderNum)) next.delete(orderNum);
+      else next.add(orderNum);
       return next;
     });
   }
@@ -302,7 +401,9 @@ export default function InvoiceDetailPage() {
     );
   }
 
-  const { invoice, lines, missing_order_numbers, product_groups, verification } = data;
+  const { invoice, verification } = data;
+  const overchargedOrders = buildOverchargedOrders(data.supplier_groups ?? []);
+  const totalOvercharge = overchargedOrders.reduce((sum, order) => sum + order.overcharge, 0);
 
   function statusBadge() {
     switch (invoice.status) {
@@ -316,7 +417,7 @@ export default function InvoiceDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6 pb-20">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -339,248 +440,128 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
-      {/* Missing Orders Warning */}
-      {missing_order_numbers.length > 0 && (
-        <Card className="border-yellow-400 bg-yellow-50">
-          <CardContent className="pt-4">
-            <p className="text-sm font-semibold text-yellow-800">
-              Missing Orders ({missing_order_numbers.length})
-            </p>
-            <p className="text-xs text-yellow-700">
-              {missing_order_numbers.join(", ")}
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Summary */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Summary</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-4">
-            <div>
-              <span className="text-muted-foreground">Distinct Orders</span>
-              <p className="font-mono font-bold">
-                {verification.commission.distinct_order_count}
-              </p>
+      {/* Quick Summary Sidebar-style Card */}
+      <Card className="bg-muted/30 border-primary/20 shadow-sm">
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap justify-between items-end gap-4">
+            <div className="space-y-1">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Invoice Breakdown</span>
+              <div className="flex gap-6 text-sm">
+                <p>Goods: <span className="font-mono font-bold">{gbp(invoice.total_supplier_cost)}</span></p>
+                <p>Shipping: <span className="font-mono font-bold">{gbp(invoice.total_shipping_cost)}</span></p>
+                <p>Comm. (Order): <span className="font-mono font-bold text-blue-600">{gbp(verification.commission.distinct_order_count * 0.8)}</span></p>
+                <p>Comm. (xProd): <span className="font-mono font-bold text-red-600">{gbp(verification.quantity_summary.commissionable_quantity * 0.8)}</span></p>
+              </div>
             </div>
-            <div>
-              <span className="text-muted-foreground">Total Products</span>
-              <p className="font-mono font-bold">
-                {verification.quantity_summary.total_quantity}
+            <div className="text-right">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Grand Total</span>
+              <p className="text-4xl font-mono font-bold text-primary">
+                {gbp(
+                  invoice.total_supplier_cost +
+                  invoice.total_shipping_cost +
+                  (verification.commission.distinct_order_count * 0.8) +
+                  (verification.quantity_summary.commissionable_quantity * 0.8)
+                )}
               </p>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Commission</span>
-              <p className="font-mono font-bold">
-                {gbp(verification.commission.total_commission_gbp)}
-              </p>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Product Groups</span>
-              <p className="font-mono font-bold">{product_groups.length}</p>
             </div>
           </div>
-          <Separator className="my-4" />
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span>Total Supplier Cost:</span>
-              <span className="font-mono">{gbp(invoice.total_supplier_cost)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Total Shipping Cost:</span>
-              <span className="font-mono">{gbp(invoice.total_shipping_cost)}</span>
-            </div>
-            <Separator />
-            <div className="flex justify-between text-base font-bold">
-              <span>Grand Total:</span>
-              <span className="font-mono">{gbp(invoice.grand_total)}</span>
-            </div>
-          </div>
-
-          {(invoice.eu_shipping_override !== null ||
-            invoice.uk_shipping_override !== null ||
-            invoice.us_shipping_override !== null ||
-            invoice.au_shipping_override !== null) && (
-              <>
-                <Separator className="my-3" />
-                <p className="text-xs text-muted-foreground">
-                  Shipping overrides applied:
-                  {invoice.eu_shipping_override !== null &&
-                    ` EU: ${gbp(invoice.eu_shipping_override)}`}
-                  {invoice.uk_shipping_override !== null &&
-                    ` UK: ${gbp(invoice.uk_shipping_override)}`}
-                  {invoice.us_shipping_override !== null &&
-                    ` US: ${gbp(invoice.us_shipping_override)}`}
-                  {invoice.au_shipping_override !== null &&
-                    ` AU: ${gbp(invoice.au_shipping_override)}`}
-                </p>
-              </>
-            )}
         </CardContent>
       </Card>
 
-      {/* Verification Invoice */}
+      {/* 1. Verification Invoice */}
       <Card>
         <CardHeader>
-          <CardTitle>Verification Invoice</CardTitle>
+          <CardTitle>1. Verification Invoice</CardTitle>
           <CardDescription>
-            Orders #{invoice.start_order_number} — #{invoice.end_order_number} · Compare this against the supplier invoice line by line.
+            Detailed breakdown for verification against supplier invoice.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[250px]">Products Name</TableHead>
-                  <TableHead>Set</TableHead>
-                  <TableHead>Country</TableHead>
-                  <TableHead className="text-right">Quantity</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sortSupplierGroups(data.supplier_groups ?? []).map((group) => (
-                  <React.Fragment key={group.supplier_label}>
-                    {/* Category header row */}
-                    <TableRow className="bg-muted/30 border-t-2 border-muted">
-                      <TableCell className="font-semibold" colSpan={4}>
-                        {group.supplier_label}
-                      </TableCell>
-                    </TableRow>
-                    {/* Per-market rows — with set breakdown for set-eligible */}
-                    {group.markets.map((market) => {
-                      if (group.is_set_eligible && market.sets && market.sets.length > 0) {
-                        // Render one row per set size
-                        return market.sets.map((setEntry) => {
-                          const expandKey = `${group.supplier_label}_${market.market_code}_${setEntry.set_size}`;
-                          const isExpanded = expandedMarkets.has(expandKey);
-                          return (
-                            <React.Fragment key={expandKey}>
-                              <TableRow
-                                className="cursor-pointer hover:bg-muted/20"
-                                onClick={() => toggleMarketExpand(expandKey)}
-                              >
-                                <TableCell className="text-xs text-muted-foreground">
-                                  {isExpanded ? "▼" : "▶"} {setEntry.lines.length} line{setEntry.lines.length !== 1 ? "s" : ""}
-                                </TableCell>
-                                <TableCell className="text-sm">
-                                  {setEntry.set_size} filter{setEntry.set_size !== 1 ? "s" : ""}
-                                </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline">{market.market_code}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right font-mono">
-                                  {setEntry.quantity}
-                                </TableCell>
-                              </TableRow>
-                              {/* Expanded order lines */}
-                              {isExpanded && setEntry.lines.map((line, idx) => (
-                                <TableRow
-                                  key={`${expandKey}_${idx}`}
-                                  className="bg-muted/10"
-                                >
-                                  <TableCell className="pl-8 text-xs text-muted-foreground font-mono">
-                                    #{line.order_number}
-                                  </TableCell>
-                                  <TableCell className="text-xs text-muted-foreground" />
-                                  <TableCell className="text-xs text-muted-foreground">
-                                    {line.sku ? `${line.sku} — ` : ""}{line.title}
-                                  </TableCell>
-                                  <TableCell className="text-right font-mono text-xs">
-                                    {line.quantity}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </React.Fragment>
-                          );
-                        });
-                      }
-
-                      // Non-set-eligible: original single row per market
-                      const expandKey = `${group.supplier_label}_${market.market_code}`;
-                      const isExpanded = expandedMarkets.has(expandKey);
-                      return (
-                        <React.Fragment key={expandKey}>
-                          <TableRow
-                            className="cursor-pointer hover:bg-muted/20"
-                            onClick={() => toggleMarketExpand(expandKey)}
-                          >
-                            <TableCell className="text-xs text-muted-foreground">
-                              {isExpanded ? "▼" : "▶"} {market.lines.length} line{market.lines.length !== 1 ? "s" : ""}
-                            </TableCell>
-                            <TableCell className="text-sm text-muted-foreground">—</TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{market.market_code}</Badge>
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {market.quantity}
-                            </TableCell>
-                          </TableRow>
-                          {/* Expanded order lines */}
-                          {isExpanded && market.lines.map((line, idx) => (
-                            <TableRow
-                              key={`${expandKey}_${idx}`}
-                              className="bg-muted/10"
-                            >
-                              <TableCell className="pl-8 text-xs text-muted-foreground font-mono">
-                                #{line.order_number}
-                              </TableCell>
-                              <TableCell className="text-xs text-muted-foreground" />
-                              <TableCell className="text-xs text-muted-foreground">
-                                {line.sku ? `${line.sku} — ` : ""}{line.title}
-                              </TableCell>
-                              <TableCell className="text-right font-mono text-xs">
-                                {line.quantity}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </React.Fragment>
-                      );
-                    })}
-                  </React.Fragment>
-                ))}
-                {/* Grand total */}
-                <TableRow className="bg-muted/50 border-t-2">
-                  <TableCell className="font-bold">Total</TableCell>
-                  <TableCell />
-                  <TableCell />
-                  <TableCell className="text-right font-mono font-bold text-base">
-                    {(data.supplier_groups ?? []).reduce((sum, g) => sum + g.total_quantity, 0)}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Orders & Commission */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Orders & Commission</CardTitle>
-        </CardHeader>
-        <CardContent>
           <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/50">
+                <TableHead className="w-[280px]">Product Name</TableHead>
+                <TableHead>Set/Type</TableHead>
+                <TableHead>Country</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead className="text-right">Unit Price</TableHead>
+                <TableHead className="text-right">Shipping</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+              </TableRow>
+            </TableHeader>
             <TableBody>
-              <TableRow>
-                <TableCell className="font-medium">Total Orders</TableCell>
-                <TableCell className="text-right font-mono font-bold text-base">
-                  {verification.commission.distinct_order_count}
+              {sortSupplierGroups(data.supplier_groups ?? []).map((group) => (
+                <React.Fragment key={group.supplier_label}>
+                  <TableRow className="bg-muted/30 border-t-2 border-muted/40 font-bold">
+                    <TableCell colSpan={4}>{group.supplier_label}</TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">{gbp(group.total_goods_cost)}</TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">{gbp(group.total_shipping_cost)}</TableCell>
+                    <TableCell className="text-right font-mono text-[13px] text-blue-900">{gbp(group.total_cost)}</TableCell>
+                  </TableRow>
+                  {group.markets.map((market) => {
+                    if (group.is_set_eligible && market.sets && market.sets.length > 0) {
+                      return market.sets.map((setEntry, sIdx) => {
+                        const expandKey = `${group.supplier_label}_${market.market_code}_${setEntry.set_size}`;
+                        const isExpanded = expandedMarkets.has(expandKey);
+                        return (
+                          <React.Fragment key={`${expandKey}_${sIdx}`}>
+                            <TableRow className="cursor-pointer hover:bg-muted/5" onClick={() => toggleMarketExpand(expandKey)}>
+                              <TableCell className="text-xs text-muted-foreground pl-6">
+                                {isExpanded ? "▼" : "▶"} {setEntry.lines.length} lines
+                              </TableCell>
+                              <TableCell className="text-sm italic">{setEntry.set_size} unit set</TableCell>
+                              <TableCell><Badge variant="outline" className="font-mono text-[10px]">{market.market_code}</Badge></TableCell>
+                              <TableCell className="text-right font-mono">{setEntry.quantity}</TableCell>
+                              <TableCell className="text-right font-mono text-xs">{gbp(setEntry.goods_cost_per_set)}</TableCell>
+                              <TableCell className="text-right font-mono text-xs">{gbp(setEntry.shipping_cost_per_set)}</TableCell>
+                              <TableCell className="text-right font-mono font-semibold">{gbp(setEntry.total_cost)}</TableCell>
+                            </TableRow>
+                            {isExpanded && setEntry.lines.map((l, i) => (
+                              <TableRow key={i} className="bg-muted/5 text-[10px] border-none">
+                                <TableCell className="pl-12 font-mono text-muted-foreground">#{l.order_number}</TableCell>
+                                <TableCell colSpan={6} className="text-muted-foreground italic">{l.title} (x{l.quantity})</TableCell>
+                              </TableRow>
+                            ))}
+                          </React.Fragment>
+                        );
+                      });
+                    }
+                    const expandKey = `${group.supplier_label}_${market.market_code}`;
+                    const isExpanded = expandedMarkets.has(expandKey);
+                    return (
+                      <React.Fragment key={expandKey}>
+                        <TableRow className="cursor-pointer hover:bg-muted/5" onClick={() => toggleMarketExpand(expandKey)}>
+                          <TableCell className="text-xs text-muted-foreground pl-6">
+                            {isExpanded ? "▼" : "▶"} {market.lines.length} lines
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">—</TableCell>
+                          <TableCell><Badge variant="outline" className="font-mono text-[10px]">{market.market_code}</Badge></TableCell>
+                          <TableCell className="text-right font-mono">{market.quantity}</TableCell>
+                          <TableCell className="text-right font-mono text-xs">{gbp(market.goods_cost_per_unit)}</TableCell>
+                          <TableCell className="text-right font-mono text-xs">{gbp(market.shipping_cost_per_unit)}</TableCell>
+                          <TableCell className="text-right font-mono font-semibold">{gbp(market.total_cost)}</TableCell>
+                        </TableRow>
+                        {isExpanded && market.lines.map((l, i) => (
+                          <TableRow key={i} className="bg-muted/5 text-[10px] border-none">
+                            <TableCell className="pl-12 font-mono text-muted-foreground">#{l.order_number}</TableCell>
+                            <TableCell colSpan={6} className="text-muted-foreground italic">{l.title} (x{l.quantity})</TableCell>
+                          </TableRow>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+              {/* Summary Sub-total Row */}
+              <TableRow className="bg-muted/80 border-t-4 border-double font-bold h-12">
+                <TableCell colSpan={3} className="text-sm uppercase tracking-wider pl-4">Supplier Sub-Total</TableCell>
+                <TableCell className="text-right font-mono text-base">
+                  {(data.supplier_groups ?? []).reduce((sum, g) => sum + g.total_quantity, 0)}
                 </TableCell>
-              </TableRow>
-              <TableRow>
-                <TableCell className="font-medium">Commission Rate</TableCell>
-                <TableCell className="text-right font-mono">
-                  {gbp(verification.commission.rate_gbp)} per order
-                </TableCell>
-              </TableRow>
-              <TableRow className="bg-muted/30">
-                <TableCell className="font-bold">Total Commission</TableCell>
-                <TableCell className="text-right font-mono font-bold text-base">
-                  {gbp(verification.commission.total_commission_gbp)}
+                <TableCell className="text-right font-mono text-base">{gbp(invoice.total_supplier_cost)}</TableCell>
+                <TableCell className="text-right font-mono text-base">{gbp(invoice.total_shipping_cost)}</TableCell>
+                <TableCell className="text-right font-mono text-[22px] text-primary">
+                  {gbp(invoice.total_supplier_cost + invoice.total_shipping_cost)}
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -588,167 +569,215 @@ export default function InvoiceDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Shipping Analysis */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Shipping Analysis
-            {verification.shipping_analysis.multi_item_orders.length > 0 && (
-              <Badge variant="outline" className="ml-2">
-                {verification.shipping_analysis.multi_item_orders.length} multi-item orders
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* 2. Orders & Commission */}
+        <Card className="border-blue-100 shadow-sm">
+          <CardHeader className="bg-blue-50/50 pb-3">
+            <CardTitle className="text-lg text-blue-900 font-bold">2. Orders & Commission</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="space-y-3">
+              <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-blue-100 italic">
+                <span className="text-sm font-medium">Distinct Order Count</span>
+                <span className="font-mono font-bold text-lg">{verification.commission.distinct_order_count}</span>
+              </div>
+              <div className="flex justify-between items-center p-3">
+                <span className="text-sm">Rate</span>
+                <span className="font-mono">£0.80 per order</span>
+              </div>
+              <Separator />
+              <div className="flex justify-between items-center bg-blue-100/50 p-4 rounded-xl border-t-2 border-blue-200">
+                <span className="font-bold text-blue-900">Total Per Order</span>
+                <span className="text-xl font-mono font-extrabold text-blue-950">
+                  {gbp(verification.commission.distinct_order_count * 0.80)}
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 3. Orders & Commission xProduct */}
+        <Card className="border-red-100 shadow-sm">
+          <CardHeader className="bg-red-50/50 pb-3">
+            <CardTitle className="text-lg text-red-900 font-bold">3. Orders & Commission xProduct</CardTitle>
+            <CardDescription className="text-red-700/70">Fee per product (Sets count as 1, £0 omitted)</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="space-y-3">
+              <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-red-100 italic">
+                <span className="text-sm font-medium">Commissionable Products</span>
+                <span className="font-mono font-bold text-lg">{verification.quantity_summary.commissionable_quantity}</span>
+              </div>
+              <div className="flex justify-between items-center p-3">
+                <span className="text-sm">Rate</span>
+                <span className="font-mono">£0.80 per product/set</span>
+              </div>
+              <Separator />
+              <div className="flex justify-between items-center bg-red-100/50 p-4 rounded-xl border-t-2 border-red-200">
+                <span className="font-bold text-red-900">Total Per Product</span>
+                <span className="text-xl font-mono font-extrabold text-red-950">
+                  {gbp(verification.quantity_summary.commissionable_quantity * 0.80)}
+                </span>
+              </div>
+              <Separator />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-900">Overcharged Orders</span>
+                  <Badge variant="outline" className="border-amber-300 bg-amber-100 text-amber-800">
+                    {overchargedOrders.length} orders
+                  </Badge>
+                </div>
+                {overchargedOrders.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Order #</TableHead>
+                        <TableHead>Market</TableHead>
+                        <TableHead className="text-right">Products</TableHead>
+                        <TableHead className="text-right">Overcharge</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {overchargedOrders.map((order) => {
+                        const isExpanded = expandedOverchargedOrders.has(order.order_number);
+                        return (
+                          <React.Fragment key={order.order_number}>
+                            <TableRow
+                              className="cursor-pointer hover:bg-amber-50/30"
+                              onClick={() => toggleOverchargedOrderExpand(order.order_number)}
+                            >
+                              <TableCell className="font-mono font-bold text-amber-950">#{order.order_number}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="border-amber-200 text-amber-800 bg-white">
+                                  {order.market_code}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right font-mono font-bold text-amber-700">
+                                {order.product_count}
+                              </TableCell>
+                              <TableCell className="text-right font-mono font-bold text-red-700">
+                                {gbp(order.overcharge)}
+                              </TableCell>
+                              <TableCell className="text-xs text-amber-700/50 w-8 text-right">
+                                {isExpanded ? "â–²" : "â–¼"}
+                              </TableCell>
+                            </TableRow>
+                            {isExpanded &&
+                              order.items.map((item, idx) => (
+                                <TableRow key={`${order.order_number}_${idx}`} className="bg-amber-50/30 border-none">
+                                  <TableCell />
+                                  <TableCell colSpan={3} className="text-sm text-amber-900/80 italic">
+                                    {item.title}
+                                  </TableCell>
+                                  <TableCell className="text-center font-mono text-xs font-bold text-amber-900/70">
+                                    x{item.quantity}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                          </React.Fragment>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="rounded-lg border border-amber-100 bg-amber-50/30 p-3 text-sm text-amber-900/70">
+                    No overcharged orders in this invoice snapshot.
+                  </div>
+                )}
+                <div className="flex justify-between items-center bg-amber-100/50 p-4 rounded-xl border-t-2 border-amber-200">
+                  <span className="font-bold text-amber-900">Total Overcharge</span>
+                  <span className="text-xl font-mono font-extrabold text-red-950">
+                    {gbp(totalOvercharge)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 4. Multi-Box Orders */}
+      {data.multi_box_orders && data.multi_box_orders.length > 0 && (
+        <Card className="border-amber-200 shadow-sm">
+          <CardHeader className="bg-amber-50/50 pb-4">
+            <CardTitle className="text-amber-900">
+              4. Multi-Box Orders
+              <Badge variant="outline" className="ml-3 border-amber-300 bg-amber-100 text-amber-800">
+                {data.multi_box_orders.length} orders
               </Badge>
-            )}
-          </CardTitle>
-          <CardDescription>
-            Multi-item orders where shipping may be charged per item instead of per order.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-3 text-sm text-muted-foreground">
-            {verification.shipping_analysis.single_item_order_count} single-item orders |{" "}
-            {verification.shipping_analysis.multi_item_orders.length} multi-item orders
-          </p>
-          {verification.shipping_analysis.multi_item_orders.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No multi-item orders — shipping analysis not applicable.
-            </p>
-          ) : (
+            </CardTitle>
+            <CardDescription className="text-amber-700/80">
+              Orders requiring multiple boxes to be shipped, based on your price sheet logic.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Order #</TableHead>
                   <TableHead>Market</TableHead>
-                  <TableHead className="text-right">Items</TableHead>
-                  <TableHead className="text-right">Total Shipping</TableHead>
-                  <TableHead>Rates</TableHead>
+                  <TableHead className="text-right">Boxes</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {verification.shipping_analysis.multi_item_orders.map((order) => (
-                  <React.Fragment key={order.order_number}>
-                    <TableRow
-                      className="cursor-pointer"
-                      onClick={() => toggleOrderExpand(order.order_number)}
-                    >
-                      <TableCell className="font-mono">#{order.order_number}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{order.market_code ?? "—"}</Badge>
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {order.lines.length}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {gbp(order.total_shipping_on_invoice)}
-                      </TableCell>
-                      <TableCell>
-                        {order.has_mixed_shipping_rates ? (
-                          <Badge variant="destructive">Mixed</Badge>
-                        ) : (
-                          <Badge variant="outline">Uniform</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {expandedOrders.has(order.order_number) ? "▲" : "▼"}
-                      </TableCell>
-                    </TableRow>
-                    {expandedOrders.has(order.order_number) &&
-                      order.lines.map((line, idx) => (
-                        <TableRow key={`${order.order_number}_${idx}`} className="bg-muted/30">
-                          <TableCell />
-                          <TableCell colSpan={2} className="text-xs text-muted-foreground">
-                            {line.sku ? `${line.sku} – ` : ""}{line.title} (x{line.quantity})
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-xs">
-                            {gbp(line.shipping_cost)}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {gbp(line.shipping_per_unit)}/unit
-                          </TableCell>
-                          <TableCell />
-                        </TableRow>
-                      ))}
-                  </React.Fragment>
-                ))}
+                {data.multi_box_orders.map((mb) => {
+                  const isExpanded = expandedOrders.has(mb.order_number);
+                  return (
+                    <React.Fragment key={mb.order_number}>
+                      <TableRow
+                        className="cursor-pointer hover:bg-amber-50/30"
+                        onClick={() => toggleOrderExpand(mb.order_number)}
+                      >
+                        <TableCell className="font-mono font-bold text-amber-950">#{mb.order_number}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="border-amber-200 text-amber-800 bg-white">{mb.market_code}</Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-mono font-bold text-amber-700">
+                          {mb.box_count} Boxes
+                        </TableCell>
+                        <TableCell className="text-xs text-amber-700/50 w-8 text-right">
+                          {isExpanded ? "▲" : "▼"}
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded &&
+                        mb.boxes.map((box, idx) => (
+                          <TableRow key={`${mb.order_number}_${idx}`} className="bg-amber-50/30 border-none">
+                            <TableCell />
+                            <TableCell colSpan={2} className="text-sm text-amber-900/80 italic">
+                              {box.label}
+                            </TableCell>
+                            <TableCell className="text-center font-mono text-xs font-bold text-amber-900/70">
+                              x{box.quantity}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                    </React.Fragment>
+                  );
+                })}
               </TableBody>
             </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Granular Line Items */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Line Items ({lines.length})</CardTitle>
-          <CardDescription>Full line-by-line breakdown per order.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Order #</TableHead>
-                  <TableHead>Product</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Market</TableHead>
-                  <TableHead className="text-right">Qty</TableHead>
-                  <TableHead className="text-right">Supplier</TableHead>
-                  <TableHead className="text-right">Shipping</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {lines.map((line, idx) => (
-                  <TableRow key={`${line.order_number}-${idx}`}>
-                    <TableCell className="font-mono">#{line.order_number}</TableCell>
-                    <TableCell className="max-w-[200px] truncate">{line.title}</TableCell>
-                    <TableCell className="font-mono text-xs">{line.sku || "—"}</TableCell>
-                    <TableCell>
-                      {line.market_code ? (
-                        <Badge variant="secondary">{line.market_code}</Badge>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">{line.quantity}</TableCell>
-                    <TableCell className="text-right font-mono">
-                      {gbp(line.supplier_cost)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {gbp(line.shipping_cost)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono font-medium">
-                      {gbp(line.line_total)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Actions */}
-      <div className="flex justify-between">
+      <div className="flex justify-between items-center border-t pt-8">
         <div className="flex gap-2">
           {invoice.status === "draft" && (
-            <>
-              <Button variant="destructive" onClick={handleDelete}>
-                Delete Draft
-              </Button>
-              <Button variant="outline" onClick={handleVoid}>
-                Void
-              </Button>
-            </>
-          )}
-          {invoice.status === "confirmed" && (
-            <Button variant="destructive" onClick={handleVoid}>
-              Void Invoice
+            <Button variant="destructive" onClick={handleDelete} className="shadow-sm">
+              Delete Draft
             </Button>
           )}
+          <Button variant="outline" onClick={handleVoid}>
+            Void Invoice
+          </Button>
         </div>
         {invoice.status === "draft" && (
-          <Button onClick={handleConfirm}>Confirm Invoice</Button>
+          <Button onClick={handleConfirm} size="lg" className="px-8 font-bold shadow-md bg-green-600 hover:bg-green-700">
+            Confirm & Finalize Invoice
+          </Button>
         )}
       </div>
     </div>
