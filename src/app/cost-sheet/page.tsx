@@ -27,6 +27,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -120,8 +121,7 @@ const MARKET_COLORS: Record<string, string> = {
 // These are NOT in priceSheet.ts because invoices should not include them
 // (products are pre-ordered separately). Only used for margin calculations here.
 const COST_SHEET_GOODS_OVERRIDES: Record<string, number> = {
-  "Plastic Filter": 0.70,
-  "Stainless Steel": 0.70,
+  "Stainless Steel": 5.85,
   "1L Bottle": 6.80,
   "650ml Bottle": 6.80,
 };
@@ -130,20 +130,18 @@ const COST_SHEET_GOODS_OVERRIDES: Record<string, number> = {
 // Update these if subscription prices change on the storefront.
 const SUBSCRIPTION_DATA: Record<string, {
   displayTitle: string;
-  regularPriceGBP: number;
-  initialDiscountPct: number;    // % off tap on first subscription order
-  plans: { name: string; intervalMonths: number; recurringPriceGBP: number }[];
+  initialSubscriptionPriceUSD: number;  // first order subscription price
+  plans: { name: string; intervalMonths: number; recurringPriceUSD: number }[];
   tapKey: string;                // PRICE_SHEET key for the tap
   cartridgeKey: string;          // PRICE_SHEET key for cartridge refills
   cartridgesPerDelivery: number;
 }> = {
   "Stainless Steel": {
     displayTitle: "FP® Stainless Steel Tap Filter",
-    regularPriceGBP: 54.99,
-    initialDiscountPct: 25,      // → £41.24 initial
+    initialSubscriptionPriceUSD: 55.09,  // £41.24
     plans: [
-      { name: "Every 4 months", intervalMonths: 4, recurringPriceGBP: 34.00 },
-      { name: "Every 6 months", intervalMonths: 6, recurringPriceGBP: 34.00 },
+      { name: "Every 4 months", intervalMonths: 4, recurringPriceUSD: 45.42 },
+      { name: "Every 6 months", intervalMonths: 6, recurringPriceUSD: 45.42 },
     ],
     tapKey: "Stainless Steel",
     cartridgeKey: "Plastic and Stainless Steel Cartridges",
@@ -151,11 +149,10 @@ const SUBSCRIPTION_DATA: Record<string, {
   },
   "Classic Filter": {
     displayTitle: "FlowPure® Classic Tap Filter",
-    regularPriceGBP: 44.99,
-    initialDiscountPct: 25,      // confirm if different on storefront
+    initialSubscriptionPriceUSD: 51.06,  // £38.24
     plans: [
-      { name: "Every 4 months", intervalMonths: 4, recurringPriceGBP: 31.99 },
-      { name: "Every 6 months", intervalMonths: 6, recurringPriceGBP: 33.19 },
+      { name: "Every 4 months", intervalMonths: 4, recurringPriceUSD: 38.73 },
+      { name: "Every 6 months", intervalMonths: 6, recurringPriceUSD: 38.73 },
     ],
     tapKey: "Plastic Filter",
     cartridgeKey: "Plastic and Stainless Steel Cartridges",
@@ -172,11 +169,29 @@ function gbpToUsd(gbpValue: number): number {
   return gbpValue * GBP_TO_USD;
 }
 
+function usdToGbp(usdValue: number): number {
+  return usdValue / GBP_TO_USD;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function usd(value: number | null | undefined): string {
   if (value === null || value === undefined) return "N/A";
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function gbp(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "N/A";
+  return `£${value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// Format a USD value in the currently selected display currency.
+function fmtMoney(
+  usdValue: number | null | undefined,
+  currency: "USD" | "GBP"
+): string {
+  if (usdValue === null || usdValue === undefined) return "N/A";
+  return currency === "GBP" ? gbp(usdToGbp(usdValue)) : usd(usdValue);
 }
 
 function pct(value: number): string {
@@ -203,6 +218,33 @@ function shippingCellClass(value: number | null): string {
   if (value <= 8.0)
     return "bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-400";
   return "bg-red-50 text-red-800 dark:bg-red-950/30 dark:text-red-400";
+}
+
+// Soft per-market column tints — coordinated light shades across distinct
+// hues so each market column reads as its own vertical band.
+const MARKET_COL_TINT: Record<string, string> = {
+  UK: "bg-sky-100/70 dark:bg-sky-900/25",
+  AU: "bg-amber-100/70 dark:bg-amber-900/25",
+  US: "bg-rose-100/70 dark:bg-rose-900/25",
+  EU: "bg-indigo-100/70 dark:bg-indigo-900/25",
+  RoW: "bg-emerald-100/70 dark:bg-emerald-900/25",
+};
+
+function marketColClass(market: string): string {
+  return MARKET_COL_TINT[market] ?? "";
+}
+
+// Alternating product-group tint. Each product "box" gets one of two soft
+// backgrounds so groups stand apart. Within a group, the second row gets a
+// very subtle stripe to help track across columns.
+function groupRowClass(groupIdx: number, posInGroup: number): string {
+  const groupTint =
+    groupIdx % 2 === 0
+      ? "bg-slate-50/70 dark:bg-slate-900/30"
+      : "bg-white dark:bg-transparent";
+  const stripe =
+    posInGroup % 2 === 1 ? "bg-slate-100/60 dark:bg-slate-800/30" : "";
+  return stripe || groupTint;
 }
 
 interface PriceRow {
@@ -373,6 +415,10 @@ function MarginTooltip({ active, payload }: any) {
 export default function CostSheetPage() {
   const [data, setData] = useState<CostSheetData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [combinedPriceView, setCombinedPriceView] = useState(false);
+  const [priceSheetCurrency, setPriceSheetCurrency] = useState<"USD" | "GBP">(
+    "USD"
+  );
 
   useEffect(() => {
     // Try API first (local dev), fall back to static snapshot (Vercel)
@@ -602,14 +648,37 @@ export default function CostSheetPage() {
         </TabsList>
 
         {/* ── Tab 1: Price Sheet Reference ───────────────────────────────── */}
-        <TabsContent value="price-sheet">
+        <TabsContent value="price-sheet" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Supplier Price Sheet</CardTitle>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant={combinedPriceView ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setCombinedPriceView((v) => !v)}
+                  >
+                    {combinedPriceView ? "Split View" : "Combined View"}
+                  </Button>
+                  <CardTitle>Supplier Price Sheet</CardTitle>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setPriceSheetCurrency((c) =>
+                      c === "USD" ? "GBP" : "USD"
+                    )
+                  }
+                  title={`Switch to ${priceSheetCurrency === "USD" ? "GBP" : "USD"} (rate: 1 GBP = $${GBP_TO_USD})`}
+                >
+                  {priceSheetCurrency === "USD" ? "$ USD" : "£ GBP"}
+                </Button>
+              </div>
               <CardDescription>
-                Full pricing reference derived from the supplier price sheet.
-                Shipping cells are color-coded: green (≤£4), amber (≤£8), red
-                (&gt;£8). Grey cells indicate missing prices.
+                {combinedPriceView
+                  ? "Combined view: each market cell shows goods + shipping as a single total. Rows are grouped per product with alternating tints for readability."
+                  : "Full pricing reference derived from the supplier price sheet. Shipping cells are color-coded: green (≤£4), amber (≤£8), red (>£8). Grey cells indicate missing prices."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -619,55 +688,168 @@ export default function CostSheetPage() {
                     <TableRow>
                       <TableHead className="w-[200px]">Product</TableHead>
                       <TableHead className="text-center">Qty / Set</TableHead>
-                      <TableHead className="text-right">Goods Cost</TableHead>
+                      {!combinedPriceView && (
+                        <TableHead className="text-right">Goods Cost</TableHead>
+                      )}
                       {MARKETS.map((m) => (
-                        <TableHead key={m} className="text-right">
+                        <TableHead
+                          key={m}
+                          className={`text-right ${combinedPriceView ? marketColClass(m) : ""}`}
+                        >
                           {m}
                         </TableHead>
                       ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {priceRows.map((row, idx) => (
-                      <TableRow
-                        key={`${row.label}-${row.setSize}`}
-                        className={
+                    {(() => {
+                      let groupIdx = -1;
+                      let posInGroup = 0;
+                      return priceRows.map((row, idx) => {
+                        if (row.isFirstInGroup) {
+                          groupIdx += 1;
+                          posInGroup = 0;
+                        } else {
+                          posInGroup += 1;
+                        }
+                        const rowBg = groupRowClass(groupIdx, posInGroup);
+                        const borderCls =
                           row.isFirstInGroup && idx > 0
                             ? "border-t-2 border-gray-300 dark:border-gray-600"
-                            : ""
-                        }
-                      >
-                        <TableCell className="font-medium">
-                          {row.isFirstInGroup ? row.label : ""}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.setSizeLabel}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {row.goodsCost === 0 ? (
-                            <span className="text-gray-400">—</span>
-                          ) : (
-                            usd(row.goodsCost)
-                          )}
-                        </TableCell>
-                        {MARKETS.map((market) => {
-                          const val = row.shipping[market];
-                          return (
-                            <TableCell
-                              key={market}
-                              className={`text-right text-xs font-mono ${shippingCellClass(val)}`}
-                            >
-                              {val === null ? "N/A" : usd(val)}
+                            : "";
+                        return (
+                          <TableRow
+                            key={`${row.label}-${row.setSize}`}
+                            className={`${borderCls} ${rowBg} transition-colors hover:bg-violet-200 dark:hover:bg-violet-900/50 hover:[&>td]:!bg-violet-200 dark:hover:[&>td]:!bg-violet-900/50`}
+                          >
+                            <TableCell className="font-medium">
+                              {row.isFirstInGroup ? row.label : ""}
                             </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
+                            <TableCell className="text-center">
+                              {row.setSizeLabel}
+                            </TableCell>
+                            {!combinedPriceView && (
+                              <TableCell className="text-right">
+                                {row.goodsCost === 0 ? (
+                                  <span className="text-gray-400">—</span>
+                                ) : (
+                                  fmtMoney(row.goodsCost, priceSheetCurrency)
+                                )}
+                              </TableCell>
+                            )}
+                            {MARKETS.map((market) => {
+                              const val = row.shipping[market];
+                              const colTint = marketColClass(market);
+                              if (combinedPriceView) {
+                                const missing =
+                                  val === null || row.goodsCost === 0;
+                                return (
+                                  <TableCell
+                                    key={market}
+                                    className={`text-right text-xs font-mono ${colTint}`}
+                                  >
+                                    {missing ? (
+                                      <span className="text-gray-400">
+                                        N/A
+                                      </span>
+                                    ) : (
+                                      fmtMoney(
+                                        row.goodsCost + (val ?? 0),
+                                        priceSheetCurrency
+                                      )
+                                    )}
+                                  </TableCell>
+                                );
+                              }
+                              return (
+                                <TableCell
+                                  key={market}
+                                  className={`text-right text-xs font-mono ${shippingCellClass(val)}`}
+                                >
+                                  {val === null
+                                    ? "N/A"
+                                    : fmtMoney(val, priceSheetCurrency)}
+                                </TableCell>
+                              );
+                            })}
+                          </TableRow>
+                        );
+                      });
+                    })()}
                   </TableBody>
                 </Table>
               </div>
             </CardContent>
           </Card>
+
+          {/* Average Order Metrics */}
+          {hasInvoiceData && summary && summary.total_orders > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Average Order Metrics</CardTitle>
+                <CardDescription>
+                  Per-order revenue, cost, and margin across all{" "}
+                  {summary.total_orders} orders. Commission is a flat $0.80 per
+                  order. Values shown in{" "}
+                  {priceSheetCurrency === "USD" ? "USD" : "GBP"}.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {(() => {
+                  const orders = summary.total_orders;
+                  const avgRevenue = totalRevenueUsd / orders;
+                  const avgGoods = adjustedGoodsCost / orders;
+                  const avgShipping = summary.total_shipping_cost / orders;
+                  const avgCommission = 0.8;
+                  const avgCost = avgGoods + avgShipping + avgCommission;
+                  const avgMargin = avgRevenue - avgCost;
+                  const avgMarginPct =
+                    avgRevenue > 0 ? (avgMargin / avgRevenue) * 100 : 0;
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="rounded-lg border p-4 space-y-1">
+                        <div className="text-sm text-muted-foreground">
+                          Avg Order Revenue
+                        </div>
+                        <div className="text-2xl font-semibold">
+                          {fmtMoney(avgRevenue, priceSheetCurrency)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Shopify order value
+                        </div>
+                      </div>
+                      <div className="rounded-lg border p-4 space-y-1">
+                        <div className="text-sm text-muted-foreground">
+                          Avg Order Cost
+                        </div>
+                        <div className="text-2xl font-semibold">
+                          {fmtMoney(avgCost, priceSheetCurrency)}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Goods {fmtMoney(avgGoods, priceSheetCurrency)} + Ship{" "}
+                          {fmtMoney(avgShipping, priceSheetCurrency)} + Comm{" "}
+                          {fmtMoney(avgCommission, priceSheetCurrency)}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border p-4 space-y-1">
+                        <div className="text-sm text-muted-foreground">
+                          Avg Order Margin
+                        </div>
+                        <div
+                          className={`text-2xl font-semibold ${profitClass(avgMargin)}`}
+                        >
+                          {fmtMoney(avgMargin, priceSheetCurrency)}
+                        </div>
+                        <div className={`text-xs ${marginClass(avgMarginPct)}`}>
+                          {pct(avgMarginPct)} margin
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          ) : null}
         </TabsContent>
 
         {/* ── Tab 2: Visualizations ──────────────────────────────────────── */}
@@ -1363,7 +1545,7 @@ function SubscriptionROI() {
   const tapShippingRaw = activeTapEntry?.shipping[market as keyof ShippingByMarket] ?? null;
   const tapShipping = tapShippingRaw ?? 0;
   const tapCost = tapGoodsCost + tapShipping + 0.80;
-  const tapInitialPrice = product.regularPriceGBP * GBP_TO_USD * (1 - product.initialDiscountPct / 100);
+  const tapInitialPrice = product.initialSubscriptionPriceUSD;
   const tapMargin = tapInitialPrice - tapCost;
 
   const cartEntry = PRICE_SHEET[product.cartridgeKey]?.[product.cartridgesPerDelivery];
@@ -1371,7 +1553,7 @@ function SubscriptionROI() {
   const cartShippingRaw = cartEntry?.shipping[market as keyof ShippingByMarket] ?? null;
   const cartShipping = cartShippingRaw ?? 0;
   const cartCost = cartGoodsCost + cartShipping + 0.80;
-  const cartRecurringPrice = plan.recurringPriceGBP * GBP_TO_USD;
+  const cartRecurringPrice = plan.recurringPriceUSD;
   const cartMargin = cartRecurringPrice - cartCost;
 
   const adSpend = parseFloat(adSpendStr) || 0;
@@ -1456,32 +1638,14 @@ function SubscriptionROI() {
               <CardTitle className="text-base">Initial Tap Sale</CardTitle>
               <p className="text-xs text-muted-foreground mt-1">
                 Subscription price: {usd(tapInitialPrice)}
-                <span className="ml-1 text-emerald-600 dark:text-emerald-400">
-                  ({product.initialDiscountPct}% off {usd(product.regularPriceGBP * GBP_TO_USD)})
-                </span>
               </p>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Goods Cost</span>
-                <span className="font-mono">{usd(tapGoodsCost)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Shipping ({market})
-                  {tapShippingRaw === null && <Badge variant="outline" className="ml-2 text-[10px]">N/A</Badge>}
-                </span>
-                <span className="font-mono">{usd(tapShipping)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Commission</span>
-                <span className="font-mono">{usd(0.80)}</span>
-              </div>
-              <div className="flex justify-between border-t pt-2">
                 <span className="text-muted-foreground">Total Cost</span>
                 <span className="font-mono text-red-600 dark:text-red-400">{usd(tapCost)}</span>
               </div>
-              <div className="flex justify-between font-semibold">
+              <div className="flex justify-between font-semibold border-t pt-2">
                 <span>Margin</span>
                 <span className={`font-mono ${profitClass(tapMargin)}`}>{usd(tapMargin)}</span>
               </div>
@@ -1497,25 +1661,10 @@ function SubscriptionROI() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Goods Cost</span>
-                <span className="font-mono">{usd(cartGoodsCost)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Shipping ({market})
-                  {cartShippingRaw === null && <Badge variant="outline" className="ml-2 text-[10px]">N/A</Badge>}
-                </span>
-                <span className="font-mono">{usd(cartShipping)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Commission</span>
-                <span className="font-mono">{usd(0.80)}</span>
-              </div>
-              <div className="flex justify-between border-t pt-2">
                 <span className="text-muted-foreground">Total Cost</span>
                 <span className="font-mono text-red-600 dark:text-red-400">{usd(cartCost)}</span>
               </div>
-              <div className="flex justify-between font-semibold">
+              <div className="flex justify-between font-semibold border-t pt-2">
                 <span>Margin per Delivery</span>
                 <span className={`font-mono ${profitClass(cartMargin)}`}>{usd(cartMargin)}</span>
               </div>
