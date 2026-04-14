@@ -1,6 +1,6 @@
 // ─── Price Sheet ────────────────────────────────────────────────────────────
 // Single source of truth for supplier pricing.
-// Derived from "FINAL Price Sheet FP fix.csv".
+// Derived from "FINAL Price Sheet FP.xlsx".
 // Prices are in GBP (£).
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -24,12 +24,11 @@ export type PriceSheet = Record<string, Record<number, PriceEntry>>;
 
 export const PRICE_SHEET: PriceSheet = {
     // ── Plastic Filter ──────────────────────────────────────────────────────
-    // Goods cost = 0 (bought in advance)
     "Plastic Filter": {
-        2: { goods_cost: 0, shipping: { UK: 7.10, AU: 7.00, US: 9.60, EU: 7.20, RoW: 6.50 } },
-        3: { goods_cost: 0, shipping: { UK: 8.70, AU: 8.60, US: 11.20, EU: 8.80, RoW: 8.10 } },
-        4: { goods_cost: 0, shipping: { UK: 10.50, AU: 10.20, US: 12.80, EU: 10.40, RoW: 9.70 } },
-        6: { goods_cost: 0, shipping: { UK: 13.90, AU: 13.40, US: 14.40, EU: 13.60, RoW: 12.90 } },
+        2: { goods_cost: 4.50, shipping: { UK: 7.10, AU: 7.00, US: 9.60, EU: 7.20, RoW: 6.50 } },
+        3: { goods_cost: 4.50, shipping: { UK: 8.70, AU: 8.60, US: 11.20, EU: 8.80, RoW: 8.10 } },
+        4: { goods_cost: 4.50, shipping: { UK: 10.50, AU: 10.20, US: 12.80, EU: 10.40, RoW: 9.70 } },
+        6: { goods_cost: 4.50, shipping: { UK: 13.90, AU: 13.40, US: 14.40, EU: 13.60, RoW: 12.90 } },
     },
 
     // ── Plastic Screen ──────────────────────────────────────────────────────
@@ -50,7 +49,7 @@ export const PRICE_SHEET: PriceSheet = {
     // Goods cost = £0.70 per filter
     "Plastic and Stainless Steel Cartridges": {
         1: { goods_cost: 0.70, shipping: { UK: 4.10, AU: 4.70, US: 4.10, EU: 5.00, RoW: 3.80 } },
-        2: { goods_cost: 1.40, shipping: { UK: 4.20, AU: 4.80, US: 4.20, EU: 5.10, RoW: 3.90 } },
+        2: { goods_cost: 1.40, shipping: { UK: 4.20, AU: 4.80, US: 5.00, EU: 5.10, RoW: 3.90 } },
         3: { goods_cost: 2.10, shipping: { UK: 4.30, AU: 4.90, US: 5.70, EU: 5.20, RoW: 4.00 } },
         4: { goods_cost: 2.80, shipping: { UK: 4.40, AU: 5.00, US: 5.90, EU: 5.30, RoW: 4.10 } },
         5: { goods_cost: 3.50, shipping: { UK: 4.50, AU: 5.10, US: 6.10, EU: 5.40, RoW: 4.20 } },
@@ -61,7 +60,7 @@ export const PRICE_SHEET: PriceSheet = {
 
     // ── Shower Filter ───────────────────────────────────────────────────────
     "Shower Filter": {
-        1: { goods_cost: 4.80, shipping: { UK: 6.40, AU: 6.20, US: 10.60, EU: 6.30, RoW: 6.40 } },
+        1: { goods_cost: 4.80, shipping: { UK: 6.50, AU: 6.20, US: 10.60, EU: 6.30, RoW: 6.40 } },
     },
 
     // ── Shower Filter Cartridge ─────────────────────────────────────────────
@@ -88,7 +87,7 @@ export const PRICE_SHEET: PriceSheet = {
 
     // ── Bath Filter Cartridge ───────────────────────────────────────────────
     "Bath Filter Cartridge": {
-        1: { goods_cost: 1.10, shipping: { UK: 2.90, AU: 4.60, US: 4.60, EU: 4.40, RoW: 3.80 } },
+        1: { goods_cost: 2.10, shipping: { UK: 4.80, AU: 4.60, US: 4.60, EU: 4.40, RoW: 3.80 } },
     },
 
     // ── 360° Adapters ───────────────────────────────────────────────────────
