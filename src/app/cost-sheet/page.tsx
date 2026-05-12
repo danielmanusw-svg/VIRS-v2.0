@@ -119,12 +119,18 @@ const MARKET_COLORS: Record<string, string> = {
 
 // ─── Cost Sheet Only: real goods costs for pre-ordered products ───────────────
 // These are NOT in priceSheet.ts because invoices should not include them
-// (products are pre-ordered separately). Only used for margin calculations here.
+// (products are pre-ordered separately). Added ON TOP of priceSheet goods_cost
+// for cost-sheet display only — used for margin calculations here.
 const COST_SHEET_GOODS_OVERRIDES: Record<string, number> = {
   "Stainless Steel": 5.85,
   "1L Bottle": 6.80,
   "650ml Bottle": 6.80,
 };
+
+function displayGoodsCost(label: string, baseGoodsCost: number): number {
+  const preOrder = COST_SHEET_GOODS_OVERRIDES[label];
+  return preOrder === undefined ? baseGoodsCost : preOrder + baseGoodsCost;
+}
 
 // ─── Subscription data (hardcoded from flowpure.com) ─────────────────────────
 // Update these if subscription prices change on the storefront.
@@ -262,8 +268,7 @@ function buildPriceRows(): PriceRow[] {
     const sizes = Object.keys(entries).map(Number).sort((a, b) => a - b);
     sizes.forEach((size, idx) => {
       const entry = entries[size];
-      const overriddenGoodsCost =
-        COST_SHEET_GOODS_OVERRIDES[label] ?? entry.goods_cost;
+      const overriddenGoodsCost = displayGoodsCost(label, entry.goods_cost);
       rows.push({
         label,
         setSize: size,
@@ -334,8 +339,7 @@ function buildCostBreakdownData(
         ? Math.round((gbpToUsd(real.revenue) / real.quantity) * 100) / 100
         : 0;
 
-    const overriddenGoodsCost =
-      COST_SHEET_GOODS_OVERRIDES[label] ?? entry.goods_cost;
+    const overriddenGoodsCost = displayGoodsCost(label, entry.goods_cost);
 
     data.push({
       name: label.length > 18 ? label.substring(0, 16) + "..." : label,
@@ -596,7 +600,7 @@ export default function CostSheetPage() {
               <div className="text-2xl font-bold">
                 {usd(summary!.total_commission)}
               </div>
-              <p className="text-xs text-muted-foreground">@ $0.80/order</p>
+              <p className="text-xs text-muted-foreground">@ $0.50/order (≈£0.39 GBP)</p>
             </CardContent>
           </Card>
 
@@ -789,8 +793,8 @@ export default function CostSheetPage() {
                 <CardTitle>Average Order Metrics</CardTitle>
                 <CardDescription>
                   Per-order revenue, cost, and margin across all{" "}
-                  {summary.total_orders} orders. Commission is a flat $0.80 per
-                  order. Values shown in{" "}
+                  {summary.total_orders} orders. Commission is a flat $0.50 USD
+                  per order (≈£0.39 GBP at £1=$1.27). Values shown in{" "}
                   {priceSheetCurrency === "USD" ? "USD" : "GBP"}.
                 </CardDescription>
               </CardHeader>
@@ -1331,9 +1335,8 @@ function PricingCalculator() {
   const shippingCost = shippingRaw ?? 0;
   const shippingMissing = shippingRaw === null;
 
-  // Goods cost with cost-sheet override
-  const goodsCost =
-    COST_SHEET_GOODS_OVERRIDES[selectedProduct] ?? entry.goods_cost;
+  // Goods cost with cost-sheet override (housing pre-order + invoice goods)
+  const goodsCost = displayGoodsCost(selectedProduct, entry.goods_cost);
 
   const commission = 0.8;
   const totalCost = goodsCost + shippingCost + commission;
@@ -1540,11 +1543,12 @@ function SubscriptionROI() {
   const activeTapEntry = PRICE_SHEET[product.tapKey]?.[activeTapSetSize];
 
   const tapGoodsCost = activeTapEntry
-    ? (COST_SHEET_GOODS_OVERRIDES[product.tapKey] ?? activeTapEntry.goods_cost)
+    ? displayGoodsCost(product.tapKey, activeTapEntry.goods_cost)
     : 0;
   const tapShippingRaw = activeTapEntry?.shipping[market as keyof ShippingByMarket] ?? null;
   const tapShipping = tapShippingRaw ?? 0;
-  const tapCost = tapGoodsCost + tapShipping + 0.80;
+  // Commission: $0.50 USD/order as of 2026-04-10 (was $0.80 USD). USD-native context — no FX conversion.
+  const tapCost = tapGoodsCost + tapShipping + 0.50;
   const tapInitialPrice = product.initialSubscriptionPriceUSD;
   const tapMargin = tapInitialPrice - tapCost;
 
@@ -1552,7 +1556,8 @@ function SubscriptionROI() {
   const cartGoodsCost = cartEntry?.goods_cost ?? 0;
   const cartShippingRaw = cartEntry?.shipping[market as keyof ShippingByMarket] ?? null;
   const cartShipping = cartShippingRaw ?? 0;
-  const cartCost = cartGoodsCost + cartShipping + 0.80;
+  // Commission: $0.50 USD/order as of 2026-04-10 (was $0.80 USD). USD-native context — no FX conversion.
+  const cartCost = cartGoodsCost + cartShipping + 0.50;
   const cartRecurringPrice = plan.recurringPriceUSD;
   const cartMargin = cartRecurringPrice - cartCost;
 

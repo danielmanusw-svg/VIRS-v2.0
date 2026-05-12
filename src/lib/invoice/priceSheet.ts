@@ -24,11 +24,13 @@ export type PriceSheet = Record<string, Record<number, PriceEntry>>;
 
 export const PRICE_SHEET: PriceSheet = {
     // ── Plastic Filter ──────────────────────────────────────────────────────
+    // Goods cost rises by £0.70 per extra cartridge above the base of 2;
+    // shipping drops by the same amount so the per-market total is unchanged.
     "Plastic Filter": {
         2: { goods_cost: 4.50, shipping: { UK: 7.10, AU: 7.00, US: 9.60, EU: 7.20, RoW: 6.50 } },
-        3: { goods_cost: 4.50, shipping: { UK: 8.70, AU: 8.60, US: 11.20, EU: 8.80, RoW: 8.10 } },
-        4: { goods_cost: 4.50, shipping: { UK: 10.50, AU: 10.20, US: 12.80, EU: 10.40, RoW: 9.70 } },
-        6: { goods_cost: 4.50, shipping: { UK: 13.90, AU: 13.40, US: 14.40, EU: 13.60, RoW: 12.90 } },
+        3: { goods_cost: 5.20, shipping: { UK: 8.00, AU: 7.90, US: 10.50, EU: 8.10, RoW: 7.40 } },
+        4: { goods_cost: 5.90, shipping: { UK: 9.10, AU: 8.80, US: 11.40, EU: 9.00, RoW: 8.30 } },
+        6: { goods_cost: 7.30, shipping: { UK: 11.10, AU: 10.60, US: 11.60, EU: 10.80, RoW: 10.10 } },
     },
 
     // ── Plastic Screen ──────────────────────────────────────────────────────
@@ -37,12 +39,16 @@ export const PRICE_SHEET: PriceSheet = {
     },
 
     // ── Stainless Steel ─────────────────────────────────────────────────────
-    // Goods cost = 0 for all set sizes
+    // Housing is pre-ordered separately (£5.85, applied as additive override
+    // in cost-sheet display only — see COST_SHEET_GOODS_OVERRIDES).
+    // goods_cost here covers the extra cartridges packed in sets above qty 2
+    // (£0.70 per cartridge); shipping is reduced by the same amount so the
+    // per-market total is unchanged.
     "Stainless Steel": {
-        2: { goods_cost: 0, shipping: { UK: 7.20, AU: 7.20, US: 10.40, EU: 7.30, RoW: 7.00 } },
-        3: { goods_cost: 0, shipping: { UK: 8.90, AU: 8.80, US: 13.00, EU: 8.90, RoW: 8.70 } },
-        4: { goods_cost: 0, shipping: { UK: 10.60, AU: 10.40, US: 15.60, EU: 10.50, RoW: 10.40 } },
-        6: { goods_cost: 0, shipping: { UK: 14.00, AU: 13.60, US: 20.80, EU: 13.70, RoW: 12.10 } },
+        2: { goods_cost: 0,    shipping: { UK: 7.20, AU: 7.20, US: 10.40, EU: 7.30, RoW: 7.00 } },
+        3: { goods_cost: 0.70, shipping: { UK: 8.20, AU: 8.10, US: 12.30, EU: 8.20, RoW: 8.00 } },
+        4: { goods_cost: 1.40, shipping: { UK: 9.20, AU: 9.00, US: 14.20, EU: 9.10, RoW: 9.00 } },
+        6: { goods_cost: 2.80, shipping: { UK: 11.20, AU: 10.80, US: 18.00, EU: 10.90, RoW: 9.30 } },
     },
 
     // ── Plastic and Stainless Steel Cartridges ──────────────────────────────
