@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   DollarSign,
   Truck,
@@ -8,6 +8,8 @@ import {
   TrendingUp,
   ShoppingCart,
   Percent,
+  Plus,
+  X,
 } from "lucide-react";
 import {
   Card,
@@ -1311,37 +1313,100 @@ export default function CostSheetPage() {
 
 // ─── Pricing Calculator Component ─────────────────────────────────────────────
 
+// Products that each occupy exactly one shipping box: tap-filter sets plus the
+// large products. When an order ships in 2+ boxes the supplier gives a $3
+// discount for every box past the first (2 boxes = $3 off, 3 boxes = $6 off).
+// Adapters and standalone cartridges tuck in / are absorbed and add no boxes.
+// See docs/FINANCE-RULES.md §6 and docs/Cost-rules.md.
+const MULTIBOX_PRODUCTS = new Set<string>([
+  "Plastic Filter",
+  "Stainless Steel",
+  "Shower Filter",
+  "Plastic Screen",
+  "650ml Bottle",
+  "1L Bottle",
+  "Bath Filter",
+]);
+const MULTIBOX_DISCOUNT_PER_BOX = 3;
+
+interface CalcLine {
+  id: number;
+  product: string;
+  quantity: number;
+  setSize: number; // 0 = use the smallest available set size
+  sellingPrice: string;
+}
+
 function PricingCalculator() {
   const productLabels = Object.keys(PRICE_SHEET);
-  const [selectedProduct, setSelectedProduct] = useState(productLabels[0]);
-  const [selectedMarket, setSelectedMarket] = useState<string>("UK");
-  const [selectedSetSize, setSelectedSetSize] = useState<number>(0);
-  const [sellingPrice, setSellingPrice] = useState<string>("");
 
-  const entries = PRICE_SHEET[selectedProduct];
-  const setSizes = Object.keys(entries)
-    .map(Number)
-    .sort((a, b) => a - b);
+  const [market, setMarket] = useState<string>("UK");
+  const [applyMultibox, setApplyMultibox] = useState(true);
+  const [lines, setLines] = useState<CalcLine[]>([
+    { id: 1, product: productLabels[0], quantity: 1, setSize: 0, sellingPrice: "" },
+  ]);
+  const nextId = useRef(2);
 
-  // Reset set size when product changes
-  const activeSetSize =
-    selectedSetSize && setSizes.includes(selectedSetSize)
-      ? selectedSetSize
-      : setSizes[0];
+  const updateLine = (id: number, patch: Partial<CalcLine>) =>
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const addLine = () =>
+    setLines((prev) => [
+      ...prev,
+      {
+        id: nextId.current++,
+        product: productLabels[0],
+        quantity: 1,
+        setSize: 0,
+        sellingPrice: "",
+      },
+    ]);
+  const removeLine = (id: number) =>
+    setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev));
 
-  const entry = entries[activeSetSize];
-  const shippingRaw =
-    entry.shipping[selectedMarket as keyof ShippingByMarket];
-  const shippingCost = shippingRaw ?? 0;
-  const shippingMissing = shippingRaw === null;
+  // Resolve each line into concrete costs for the selected market.
+  const computed = lines.map((line) => {
+    const entries = PRICE_SHEET[line.product];
+    const setSizes = Object.keys(entries)
+      .map(Number)
+      .sort((a, b) => a - b);
+    const activeSetSize =
+      line.setSize && setSizes.includes(line.setSize) ? line.setSize : setSizes[0];
+    const entry = entries[activeSetSize];
+    const shippingRaw = entry.shipping[market as keyof ShippingByMarket];
+    const shippingMissing = shippingRaw === null;
+    const qty = Math.max(1, line.quantity);
+    // Goods cost with cost-sheet override (housing pre-order + invoice goods)
+    const unitGoods = displayGoodsCost(line.product, entry.goods_cost);
+    const lineGoods = unitGoods * qty;
+    const lineShipping = (shippingRaw ?? 0) * qty;
+    const lineRevenue = (parseFloat(line.sellingPrice) || 0) * qty;
+    const boxes = MULTIBOX_PRODUCTS.has(line.product) ? qty : 0;
+    return {
+      line,
+      setSizes,
+      activeSetSize,
+      shippingMissing,
+      lineGoods,
+      lineShipping,
+      lineRevenue,
+      boxes,
+    };
+  });
 
-  // Goods cost with cost-sheet override (housing pre-order + invoice goods)
-  const goodsCost = displayGoodsCost(selectedProduct, entry.goods_cost);
-
+  const totalGoods = computed.reduce((s, c) => s + c.lineGoods, 0);
+  const totalShippingRaw = computed.reduce((s, c) => s + c.lineShipping, 0);
+  const boxCount = computed.reduce((s, c) => s + c.boxes, 0);
+  // Discount applies to every box past the first ($3 each), so 2 boxes = $3 off.
+  const potentialDiscount =
+    boxCount >= 2 ? (boxCount - 1) * MULTIBOX_DISCOUNT_PER_BOX : 0;
+  const multiboxDiscount = applyMultibox ? potentialDiscount : 0;
+  const totalShipping = totalShippingRaw - multiboxDiscount;
+  // Flat commission per order (charged once, regardless of how many items).
   const commission = 0.8;
-  const totalCost = goodsCost + shippingCost + commission;
+  const totalCost = totalGoods + totalShipping + commission;
+  const anyShippingMissing = computed.some((c) => c.shippingMissing);
 
-  const price = parseFloat(sellingPrice) || 0;
+  const price = computed.reduce((s, c) => s + c.lineRevenue, 0);
   const profit = price - totalCost;
   const margin = price > 0 ? (profit / price) * 100 : 0;
   const breakEvenAd = profit > 0 ? profit : 0;
@@ -1351,38 +1416,17 @@ function PricingCalculator() {
       <CardHeader>
         <CardTitle>Pricing Calculator</CardTitle>
         <CardDescription>
-          Select a product and market, enter your selling price in $, and see
-          your profit margin and break-even ad spend per customer.
+          Build an order from one or more product lines, pick the market, and
+          enter each line&apos;s selling price in $ to see profit margin,
+          break-even ad spend per customer, and the multi-box shipping discount.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-8">
-        {/* Inputs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="space-y-2">
-            <Label>Product</Label>
-            <Select
-              value={selectedProduct}
-              onValueChange={(v) => {
-                setSelectedProduct(v);
-                setSelectedSetSize(0);
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {productLabels.map((label) => (
-                  <SelectItem key={label} value={label}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
+        {/* Order-level inputs */}
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="space-y-2 w-[200px]">
             <Label>Market</Label>
-            <Select value={selectedMarket} onValueChange={setSelectedMarket}>
+            <Select value={market} onValueChange={setMarket}>
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -1395,39 +1439,126 @@ function PricingCalculator() {
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-2">
+            <Label>Multi-box discount</Label>
+            <Button
+              type="button"
+              variant={applyMultibox ? "default" : "outline"}
+              onClick={() => setApplyMultibox((v) => !v)}
+              className="w-[110px] justify-center"
+            >
+              {applyMultibox ? "On" : "Off"}
+            </Button>
+          </div>
+        </div>
 
-          {setSizes.length > 1 && (
-            <div className="space-y-2">
-              <Label>Set Size</Label>
+        {/* Product lines */}
+        <div className="space-y-3">
+          <div className="hidden md:grid md:grid-cols-[1fr_80px_140px_130px_40px] gap-3 px-1">
+            <Label className="text-xs text-muted-foreground">Product</Label>
+            <Label className="text-xs text-muted-foreground">Quantity</Label>
+            <Label className="text-xs text-muted-foreground">
+              Cartridges Set
+            </Label>
+            <Label className="text-xs text-muted-foreground">
+              Selling Price ($)
+            </Label>
+            <span />
+          </div>
+
+          {computed.map((c) => (
+            <div
+              key={c.line.id}
+              className="grid grid-cols-1 md:grid-cols-[1fr_80px_140px_130px_40px] gap-3 items-center"
+            >
               <Select
-                value={String(activeSetSize)}
-                onValueChange={(v) => setSelectedSetSize(Number(v))}
+                value={c.line.product}
+                onValueChange={(v) =>
+                  updateLine(c.line.id, { product: v, setSize: 0 })
+                }
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {setSizes.map((s) => (
-                    <SelectItem key={s} value={String(s)}>
-                      {s}
+                  {productLabels.map((label) => (
+                    <SelectItem key={label} value={label}>
+                      {label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-          )}
 
-          <div className="space-y-2">
-            <Label>Selling Price ($)</Label>
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="e.g. 49.99"
-              value={sellingPrice}
-              onChange={(e) => setSellingPrice(e.target.value)}
-            />
-          </div>
+              <Input
+                type="number"
+                min="1"
+                step="1"
+                placeholder="Qty"
+                value={c.line.quantity}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  updateLine(c.line.id, {
+                    quantity: Number.isNaN(n) ? 1 : Math.max(1, n),
+                  });
+                }}
+              />
+
+              {c.setSizes.length > 1 ? (
+                <Select
+                  value={String(c.activeSetSize)}
+                  onValueChange={(v) =>
+                    updateLine(c.line.id, { setSize: Number(v) })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {c.setSizes.map((s) => (
+                      <SelectItem key={s} value={String(s)}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="flex h-9 items-center justify-center rounded-md border border-dashed bg-muted/30 text-sm text-muted-foreground">
+                  —
+                </div>
+              )}
+
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="e.g. 49.99"
+                value={c.line.sellingPrice}
+                onChange={(e) =>
+                  updateLine(c.line.id, { sellingPrice: e.target.value })
+                }
+              />
+
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => removeLine(c.line.id)}
+                disabled={lines.length === 1}
+                aria-label="Remove product"
+                className="text-muted-foreground hover:text-red-600"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={addLine}
+            className="gap-1"
+          >
+            <Plus className="h-4 w-4" /> Add product
+          </Button>
         </div>
 
         {/* Cost Breakdown */}
@@ -1439,19 +1570,43 @@ function PricingCalculator() {
             <CardContent className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Goods Cost</span>
-                <span className="font-mono">{usd(goodsCost)}</span>
+                <span className="font-mono">{usd(totalGoods)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">
-                  Shipping ({selectedMarket})
-                  {shippingMissing && (
+                  Shipping ({market})
+                  {anyShippingMissing && (
                     <Badge variant="outline" className="ml-2 text-[10px]">
                       N/A
                     </Badge>
                   )}
                 </span>
-                <span className="font-mono">{usd(shippingCost)}</span>
+                <span className="font-mono">{usd(totalShippingRaw)}</span>
               </div>
+              {potentialDiscount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    Multi-box discount
+                    <Badge variant="outline" className="ml-2 text-[10px]">
+                      {boxCount} boxes
+                    </Badge>
+                    {!applyMultibox && (
+                      <span className="ml-2 text-[10px] uppercase tracking-wide">
+                        off
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    className={`font-mono ${
+                      applyMultibox
+                        ? "text-green-600 dark:text-green-400"
+                        : "text-muted-foreground line-through"
+                    }`}
+                  >
+                    −{usd(potentialDiscount)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Commission</span>
                 <span className="font-mono">{usd(commission)}</span>
@@ -1511,10 +1666,10 @@ function PricingCalculator() {
           </Card>
         </div>
 
-        {shippingMissing && (
+        {anyShippingMissing && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            Shipping cost for {selectedProduct} to {selectedMarket} is not
-            available in the price sheet. Calculation uses $0.00 for shipping.
+            One or more products have no shipping price for {market} in the price
+            sheet. Those lines use $0.00 for shipping.
           </p>
         )}
       </CardContent>
